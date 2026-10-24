@@ -47,10 +47,14 @@ This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relie
 *   `kinetica_water_wheel_big.obj`: Original work created entirely by Slikko. 
 *   **License:** CC BY-SA 4.0
 
+## Media Credits & Licenses
+
+**3D Models:**
+*   `kinetica_water_wheel_big.obj`: Original 3D model created by **Slikko** (CC BY-SA 4.0).
+
 **Textures:**
-*   **Original Textures:** All custom machine casings, belts, and UI textures were created by Slikko. Licensed under CC BY-SA 4.0.
-*   **Mineclonia / VoxeLibre Assets:** Textures for the piston, stone cutter drill, steam maker (`steam_maker_down.png`, `steam_maker_side.png`, `steam_maker_front_off.png`), pipe (`pipe.png`), and water wheel core (`water_wheel_core.png`) are copied or derived from the Mineclonia/VoxeLibre project. 
-*   **License:** These specific derivative files inherit the original CC BY-SA 4.0 license. Full credit to the Mineclonia and VoxeLibre contributors for the base assets.
+*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), speed controller, gearbox, chain drive, encased fan front, chute, feeder, water pump, steam turbine, belts, shafts, and engineer's glasses were hand-painted by **Slikko**.
+*   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, `kinetica_water_wheel_core.png`, and the steam generator textures (`kinetica_steam_maker_down.png`, `kinetica_steam_maker_top.png`, `kinetica_steam_maker_side.png`, `kinetica_steam_maker_aniamtion.png`, `kinetica_steam_maker_front_off.png`) are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors). The piston, saw, and drill reference built-in Mineclonia textures directly.
 
 **Audio:**
-*   This mod does not currently bundle any custom sound files.
+*   This mod does not bundle any custom sound files.

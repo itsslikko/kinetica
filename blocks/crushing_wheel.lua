@@ -1,21 +1,22 @@
 kinetica = kinetica or {}
 
 local CONFIG = {
-    MIN_RPM                       = 16,
+    MIN_RPM                       = 1,
+    BASE_SPEED_RPM                = 16,
     KU_PER_RPM                    = 4,
-    MIN_DEMAND_KU                 = 32,
-    MAX_DEMAND_KU                 = 128,
+    MIN_DEMAND_KU                 = 16,
+    MAX_DEMAND_KU                 = 1024,
     RPM_SPEED_EXPONENT            = 1.00,
     STACK_TIME_LOG_FACTOR         = 0.16,
     TIMER_INTERVAL                = 0.10,
-    ALLOW_GEAR_MESH_PARTNER       = false,
+    ALLOW_GEAR_MESH_PARTNER       = true,
     SOLO_SPIN_DIR                 = 1,
     WHEEL_SCALE_BELT_GAP          = 1.55,
     WHEEL_SCALE_ADJACENT          = 1.16,
     BASE_SPIN_RAD_PER_SEC         = 1.80,
     MAX_SPIN_RAD_PER_SEC          = 16.0,
-    INVERT_VISUAL_SPIN            = true,
-    DRAG_PULL_SPEED               = 6.50,
+    INVERT_VISUAL_SPIN            = false,
+    DRAG_PULL_SPEED               = 7.50,
     MAX_BATCH_SIZE                = 64,
     AUTO_MERGE_INTAKE_STACKS      = true,
     SPAWN_CRUSH_XP_ORBS           = true,
@@ -33,6 +34,15 @@ local ACTIVE_NAME       = "kinetica:crushing_wheel_active"
 local MESH_UPRIGHT_NAME = "kinetica:crushing_wheel_mesh_upright"
 local MESH_FLAT_NAME    = "kinetica:crushing_wheel_mesh_flat"
 local ENTITY_NAME       = "kinetica:crushing_wheel_rotor"
+
+-- Safe 2D hypotenuse (Lua 5.1 / LuaJIT does not provide math.hypot)
+local function hypot2(dx, dz)
+    return math.sqrt(dx * dx + dz * dz)
+end
+math.hypot = math.hypot or hypot2
+
+-- Persistent crushing progress per wheel pair hash so Mineclonia item merges never reset progress
+local PAIR_CRUSH_STATE = {}
 
 local function resolve_stone_texture()
     local st_def = core.registered_nodes["mcl_core:stone"]
@@ -68,6 +78,38 @@ local function resolve_item_particle_texture(item_name)
     return STONE_TEX
 end
 
+-- Resolve item aliases across Mineclonia versions (e.g. mcl_redstone vs mesecons, mcl_dyes vs mcl_dye)
+local function resolve_valid_itemstring(item_with_count)
+    if not item_with_count or item_with_count == "" then return item_with_count end
+    local name, cnt = string.match(item_with_count, "^(%S+)%s*(%d*)$")
+    if not name then return item_with_count end
+    cnt = (cnt and cnt ~= "") and (" " .. cnt) or " 1"
+
+    if core.registered_items[name] then
+        return name .. cnt
+    end
+
+    local fallbacks = {
+        ["mesecons:redstone"]     = "mcl_redstone:redstone",
+        ["mcl_redstone:redstone"] = "mesecons:redstone",
+        ["mcl_dyes:black"]        = "mcl_dye:black",
+        ["mcl_dye:black"]         = "mcl_dyes:black",
+        ["mcl_dyes:green"]        = "mcl_dye:green",
+        ["mcl_dye:green"]         = "mcl_dyes:green",
+        ["mcl_dyes:red"]          = "mcl_dye:red",
+        ["mcl_dye:red"]           = "mcl_dyes:red",
+        ["mcl_dyes:lime"]         = "mcl_dye:lime",
+        ["mcl_dye:lime"]          = "mcl_dyes:lime",
+        ["mcl_dyes:white"]        = "mcl_dye:white",
+        ["mcl_dye:white"]         = "mcl_dyes:white",
+    }
+    local alt = fallbacks[name]
+    if alt and core.registered_items[alt] then
+        return alt .. cnt
+    end
+    return name .. cnt
+end
+
 kinetica.crushing_recipes = kinetica.crushing_recipes or {}
 
 function kinetica.register_crushing_recipe(input_item, def)
@@ -75,85 +117,277 @@ function kinetica.register_crushing_recipe(input_item, def)
     kinetica.crushing_recipes[input_item] = {
         output = def.output,
         extra  = def.extra or {},
-        time   = def.time  or 1.5,
+        time   = def.time  or 1.2,
         xp     = def.xp    or 0,
     }
 end
 
+-- Exact Create-Mod Crushing Wheel Conversions for Mineclonia
 local DEFAULT_RECIPES = {
-    ["mcl_core:stone"]                         = {output = "mcl_core:cobble 1",             time = 1.2},
-    ["mcl_core:stone_smooth"]                  = {output = "mcl_core:cobble 1",             time = 1.2},
-    ["mcl_core:cobble"]                        = {output = "mcl_core:gravel 1",             time = 1.2, extra = {{item = "mcl_core:sand 1", chance = 0.15}, {item = "mcl_core:flint 1", chance = 0.15}}},
-    ["mcl_core:mossycobble"]                   = {output = "mcl_core:gravel 1",             time = 1.2, extra = {{item = "mcl_core:flint 1", chance = 0.20}, {item = "mcl_core:vine 1", chance = 0.40}}},
-    ["mcl_core:gravel"]                        = {output = "mcl_core:sand 1",               time = 1.2, extra = {{item = "mcl_core:flint 1", chance = 0.25}, {item = "mcl_core:clay_lump 1", chance = 0.20}, {item = "mcl_core:iron_nugget 1", chance = 0.20}}},
-    ["mcl_core:sand"]                          = {output = "mcl_core:clay_lump 1",          time = 1.1, extra = {{item = "mcl_bone_meal:bone_meal 1", chance = 0.25}, {item = "mcl_nether:quartz 1", chance = 0.10}}},
-    ["mcl_core:redsand"]                       = {output = "mcl_core:clay_lump 1",          time = 1.1, extra = {{item = "mcl_core:gold_nugget 1", chance = 0.20}, {item = "mcl_bone_meal:bone_meal 1", chance = 0.20}}},
-    ["mcl_core:sandstone"]                     = {output = "mcl_core:sand 2",               time = 1.2, extra = {{item = "mcl_core:sand 2", chance = 0.50}}},
-    ["mcl_core:redsandstone"]                  = {output = "mcl_core:redsand 2",            time = 1.2, extra = {{item = "mcl_core:redsand 2", chance = 0.50}}},
-    ["mcl_core:stonebrick"]                    = {output = "mcl_core:stonebrickcracked 1",  time = 1.1},
-    ["mcl_core:stonebrickcracked"]             = {output = "mcl_core:cobble 1",             time = 1.1},
-    ["mcl_core:andesite"]                      = {output = "mcl_core:cobble 1",             time = 1.3, extra = {{item = "mcl_core:iron_nugget 1", chance = 0.30}, {item = "mcl_core:flint 1", chance = 0.15}}},
-    ["mcl_core:diorite"]                       = {output = "mcl_nether:quartz 1",           time = 1.3, extra = {{item = "mcl_nether:quartz 1", chance = 0.35}}},
-    ["mcl_core:granite"]                       = {output = "mcl_core:redsand 1",            time = 1.3, extra = {{item = "mcl_copper:raw_copper 1", chance = 0.30}, {item = "mcl_nether:quartz 1", chance = 0.20}}},
-    ["mcl_deepslate:deepslate"]                = {output = "mcl_deepslate:deepslate_cobbled 1", time = 1.4},
-    ["mcl_deepslate:deepslate_cobbled"]        = {output = "mcl_core:gravel 1",             time = 1.4, extra = {{item = "mcl_core:flint 1", chance = 0.30}, {item = "mcl_core:iron_nugget 1", chance = 0.25}, {item = "mcl_core:gold_nugget 1", chance = 0.12}}},
-    ["mcl_deepslate:tuff"]                     = {output = "mcl_core:flint 1",              time = 1.5, extra = {
-        {item = "mcl_core:iron_nugget 2",  chance = 0.35},
-        {item = "mcl_core:gold_nugget 2",  chance = 0.30},
-        {item = "mcl_copper:raw_copper 1", chance = 0.35},
-        {item = "mcl_core:lapis 1",        chance = 0.20},
+    -- Stone, Cobble, Gravel, Sand & Rock Cycle
+    ["mcl_core:stone"]                         = {output = "mcl_core:cobble 1",                  time = 1.0},
+    ["mcl_core:stone_smooth"]                  = {output = "mcl_core:cobble 1",                  time = 1.0},
+    ["mcl_core:cobble"]                        = {output = "mcl_core:gravel 1",                  time = 1.0},
+    ["mcl_core:mossycobble"]                   = {output = "mcl_core:gravel 1",                  time = 1.0},
+    ["mcl_core:gravel"]                        = {output = "mcl_core:sand 1",                    time = 1.0, extra = {
+        {item = "mcl_core:flint 1",     chance = 0.10},
+        {item = "mcl_core:clay_lump 1", chance = 0.05},
     }},
-    ["mcl_nether:netherrack"]                  = {output = "mcl_nether:soul_sand 1",        time = 1.2, extra = {{item = "mcl_core:gold_nugget 1", chance = 0.25}, {item = "mesecons:redstone 1", chance = 0.12}}},
-    ["mcl_blackstone:blackstone"]              = {output = "mcl_core:gravel 1",             time = 1.4, extra = {{item = "mcl_core:gold_nugget 2", chance = 0.30}, {item = "mcl_core:flint 1", chance = 0.25}}},
-    ["mcl_blackstone:basalt"]                  = {output = "mcl_core:gravel 1",             time = 1.4, extra = {{item = "mcl_core:iron_nugget 2", chance = 0.30}}},
-    ["mcl_core:obsidian"]                      = {output = "mcl_core:crying_obsidian 1",    time = 2.6, extra = {{item = "mcl_core:obsidian 1", chance = 0.75}}},
-    ["mcl_core:crying_obsidian"]               = {output = "mcl_core:obsidian 1",           time = 2.4, extra = {{item = "mcl_mobitems:ghast_tear 1", chance = 0.25}, {item = "mcl_core:lapis 2", chance = 0.40}}, xp = 2},
-    ["mcl_core:stone_with_iron"]               = {output = "mcl_raw_ores:raw_iron 2",       time = 1.8, xp = 2, extra = {{item = "mcl_raw_ores:raw_iron 1", chance = 0.75}, {item = "mcl_raw_ores:raw_iron 1", chance = 0.25}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_iron"]      = {output = "mcl_raw_ores:raw_iron 3",       time = 2.0, xp = 3, extra = {{item = "mcl_raw_ores:raw_iron 1", chance = 0.50}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_copper:stone_with_copper"]           = {output = "mcl_copper:raw_copper 5",       time = 1.8, xp = 2, extra = {{item = "mcl_copper:raw_copper 2", chance = 0.50}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_copper"]    = {output = "mcl_copper:raw_copper 7",       time = 2.0, xp = 3, extra = {{item = "mcl_copper:raw_copper 2", chance = 0.50}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_core:stone_with_gold"]               = {output = "mcl_raw_ores:raw_gold 2",       time = 1.8, xp = 3, extra = {{item = "mcl_raw_ores:raw_gold 1", chance = 0.75}, {item = "mcl_raw_ores:raw_gold 1", chance = 0.25}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_gold"]      = {output = "mcl_raw_ores:raw_gold 3",       time = 2.0, xp = 4, extra = {{item = "mcl_raw_ores:raw_gold 1", chance = 0.50}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_nether:nether_gold_ore"]             = {output = "mcl_core:gold_nugget 18",       time = 1.6, xp = 3, extra = {{item = "mcl_core:gold_nugget 9", chance = 0.50}, {item = "mcl_nether:netherrack 1", chance = 0.12}}},
-    ["mcl_blackstone:blackstone_gilded"]       = {output = "mcl_core:gold_nugget 18",       time = 1.8, xp = 4, extra = {{item = "mcl_core:gold_nugget 9", chance = 0.50}, {item = "mcl_blackstone:blackstone 1", chance = 0.12}}},
-    ["mcl_core:stone_with_coal"]               = {output = "mcl_core:coal_lump 2",          time = 1.5, xp = 2, extra = {{item = "mcl_core:coal_lump 2", chance = 0.75}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_coal"]      = {output = "mcl_core:coal_lump 3",          time = 1.7, xp = 2, extra = {{item = "mcl_core:coal_lump 2", chance = 0.75}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_core:stone_with_diamond"]            = {output = "mcl_core:diamond 2",            time = 2.2, xp = 5, extra = {{item = "mcl_core:diamond 1", chance = 0.50}, {item = "mcl_core:diamond 1", chance = 0.25}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_diamond"]   = {output = "mcl_core:diamond 2",            time = 2.4, xp = 6, extra = {{item = "mcl_core:diamond 1", chance = 0.75}, {item = "mcl_core:diamond 1", chance = 0.25}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_core:stone_with_emerald"]            = {output = "mcl_core:emerald 2",            time = 2.2, xp = 5, extra = {{item = "mcl_core:emerald 1", chance = 0.50}, {item = "mcl_core:emerald 1", chance = 0.25}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_emerald"]   = {output = "mcl_core:emerald 2",            time = 2.4, xp = 6, extra = {{item = "mcl_core:emerald 1", chance = 0.75}, {item = "mcl_core:emerald 1", chance = 0.25}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_core:stone_with_lapis"]              = {output = "mcl_core:lapis 10",             time = 1.7, xp = 3, extra = {{item = "mcl_core:lapis 5", chance = 0.50}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_lapis"]     = {output = "mcl_core:lapis 12",             time = 1.9, xp = 4, extra = {{item = "mcl_core:lapis 5", chance = 0.50}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_core:stone_with_redstone"]           = {output = "mesecons:redstone 6",           time = 1.7, xp = 3, extra = {{item = "mesecons:redstone 3", chance = 0.50}, {item = "mcl_core:cobble 1", chance = 0.12}}},
-    ["mcl_deepslate:deepslate_with_redstone"]  = {output = "mesecons:redstone 7",           time = 1.9, xp = 3, extra = {{item = "mesecons:redstone 3", chance = 0.50}, {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.12}}},
-    ["mcl_nether:quartz_ore"]                  = {output = "mcl_nether:quartz 3",           time = 1.6, xp = 3, extra = {{item = "mcl_nether:quartz 2", chance = 0.50}, {item = "mcl_nether:netherrack 1", chance = 0.12}}},
-    ["mcl_nether:ancient_debris"]              = {output = "mcl_nether:netherite_scrap 1",  time = 3.0, xp = 8, extra = {{item = "mcl_nether:netherite_scrap 1", chance = 0.65}, {item = "mcl_core:gold_nugget 6", chance = 0.40}}},
-    ["mcl_raw_ores:raw_iron"]                  = {output = "mcl_core:iron_nugget 9",        time = 1.4, xp = 1, extra = {{item = "mcl_core:iron_nugget 9", chance = 0.33}, {item = "mcl_core:iron_nugget 3", chance = 0.55}, {item = "mesecons:redstone 1", chance = 0.12}}},
-    ["mcl_raw_ores:raw_gold"]                  = {output = "mcl_core:gold_nugget 9",        time = 1.4, xp = 2, extra = {{item = "mcl_core:gold_nugget 9", chance = 0.33}, {item = "mcl_core:gold_nugget 3", chance = 0.55}, {item = "mcl_nether:quartz 1", chance = 0.15}}},
-    ["mcl_copper:raw_copper"]                  = {output = "mcl_copper:raw_copper 1",       time = 1.3, xp = 1, extra = {{item = "mcl_copper:raw_copper 1", chance = 0.60}, {item = "mcl_core:gold_nugget 2", chance = 0.20}, {item = "mcl_core:clay_lump 1", chance = 0.20}}},
-    ["mcl_raw_ores:raw_iron_block"]            = {output = "mcl_core:iron_ingot 9",         time = 2.8, xp = 9, extra = {{item = "mcl_core:iron_ingot 3", chance = 1.00}, {item = "mcl_core:iron_ingot 2", chance = 0.75}, {item = "mesecons:redstone 3", chance = 0.50}}},
-    ["mcl_raw_ores:raw_gold_block"]            = {output = "mcl_core:gold_ingot 9",         time = 2.8, xp = 14, extra = {{item = "mcl_core:gold_ingot 3", chance = 1.00}, {item = "mcl_core:gold_ingot 2", chance = 0.75}, {item = "mcl_nether:quartz 4", chance = 0.50}}},
-    ["mcl_copper:block_raw"]                   = {output = "mcl_copper:copper_ingot 9",     time = 2.8, xp = 9, extra = {{item = "mcl_copper:copper_ingot 4", chance = 1.00}, {item = "mcl_core:gold_ingot 1", chance = 0.65}, {item = "mcl_core:clay_lump 4", chance = 0.50}}},
-    ["mcl_mobitems:bone"]                      = {output = "mcl_bone_meal:bone_meal 4",     time = 1.0, extra = {{item = "mcl_bone_meal:bone_meal 2", chance = 0.50}}},
-    ["mcl_bone_meal:bone_block"]               = {output = "mcl_bone_meal:bone_meal 9",     time = 1.3, extra = {{item = "mcl_bone_meal:bone_meal 3", chance = 0.50}}},
-    ["mcl_mobitems:blaze_rod"]                 = {output = "mcl_mobitems:blaze_powder 3",   time = 1.2, extra = {{item = "mcl_mobitems:blaze_powder 2", chance = 0.50}}},
-    ["mcl_nether:magma"]                       = {output = "mcl_mobitems:magma_cream 2",    time = 1.3, extra = {{item = "mcl_mobitems:magma_cream 1", chance = 0.50}, {item = "mcl_mobitems:blaze_powder 1", chance = 0.25}}},
-    ["mcl_core:reeds"]                         = {output = "mcl_core:sugar 2",              time = 1.0, extra = {{item = "mcl_core:sugar 1", chance = 0.50}}},
-    ["mcl_farming:wheat_item"]                 = {output = "mcl_farming:bread 1",           time = 1.1, extra = {{item = "mcl_farming:wheat_seeds 1", chance = 0.50}}},
-    ["mcl_nether:glowstone"]                   = {output = "mcl_nether:glowstone_dust 4",   time = 1.0},
-    ["mcl_nether:quartz_block"]                = {output = "mcl_nether:quartz 4",           time = 1.2},
-    ["mcl_amethyst:amethyst_block"]            = {output = "mcl_amethyst:amethyst_shard 4", time = 1.2, extra = {{item = "mcl_amethyst:amethyst_shard 2", chance = 0.50}}},
-    ["mcl_amethyst:amethyst_cluster"]          = {output = "mcl_amethyst:amethyst_shard 6", time = 1.2, extra = {{item = "mcl_amethyst:amethyst_shard 2", chance = 0.50}}},
-    ["mcl_ocean:prismarine"]                   = {output = "mcl_ocean:prismarine_shard 4",  time = 1.3, extra = {{item = "mcl_ocean:prismarine_crystals 1", chance = 0.35}}},
-    ["mcl_ocean:prismarine_brick"]             = {output = "mcl_ocean:prismarine_shard 9",  time = 1.5, extra = {{item = "mcl_ocean:prismarine_crystals 2", chance = 0.50}}},
-    ["mcl_ocean:sea_lantern"]                  = {output = "mcl_ocean:prismarine_crystals 5", time = 1.2, extra = {{item = "mcl_ocean:prismarine_shard 4", chance = 0.75}}},
-    ["mcl_core:clay"]                          = {output = "mcl_core:clay_lump 4",          time = 1.0},
-    ["mcl_core:brick_block"]                   = {output = "mcl_core:brick 4",              time = 1.2},
-    ["mcl_core:cobweb"]                        = {output = "mcl_mobitems:string 2",         time = 1.0, extra = {{item = "mcl_mobitems:string 1", chance = 0.50}}},
-    ["mcl_mobitems:saddle"]                    = {output = "mcl_mobitems:leather 3",        time = 1.5, extra = {{item = "mcl_core:iron_ingot 1", chance = 0.75}}},
-    ["mcl_sculk:sculk"]                        = {output = "mcl_bone_meal:bone_meal 1",     time = 1.0, xp = 2},
-    ["mcl_sculk:catalyst"]                     = {output = "mcl_bone_meal:bone_meal 3",     time = 1.5, xp = 10},
-    ["mcl_sculk:shrieker"]                     = {output = "mcl_bone_meal:bone_meal 3",     time = 1.5, xp = 10},
+    ["mcl_core:sand"]                          = {output = "mcl_core:clay_lump 1",               time = 1.0, extra = {
+        {item = "mcl_bone_meal:bone_meal 1", chance = 0.15},
+    }},
+    ["mcl_core:redsand"]                       = {output = "mcl_core:clay_lump 1",               time = 1.0, extra = {
+        {item = "mcl_core:gold_nugget 1", chance = 0.12},
+        {item = "mcl_core:deadbush 1",    chance = 0.05},
+    }},
+    ["mcl_core:sandstone"]                     = {output = "mcl_core:sand 2",                    time = 1.0},
+    ["mcl_core:sandstonesmooth"]               = {output = "mcl_core:sand 2",                    time = 1.0},
+    ["mcl_core:sandstonecarved"]               = {output = "mcl_core:sand 2",                    time = 1.0},
+    ["mcl_core:redsandstone"]                  = {output = "mcl_core:redsand 2",                 time = 1.0},
+    ["mcl_core:redsandstonesmooth"]            = {output = "mcl_core:redsand 2",                 time = 1.0},
+    ["mcl_core:redsandstonecarved"]            = {output = "mcl_core:redsand 2",                 time = 1.0},
+    ["mcl_core:stonebrick"]                    = {output = "mcl_core:stonebrickcracked 1",       time = 1.0},
+    ["mcl_core:stonebrickmossy"]               = {output = "mcl_core:stonebrickcracked 1",       time = 1.0},
+    ["mcl_core:stonebrickcarved"]              = {output = "mcl_core:stonebrickcracked 1",       time = 1.0},
+    ["mcl_core:stonebrickcracked"]             = {output = "mcl_core:cobble 1",                  time = 1.0},
+
+    -- Igneous & Create Mineral Rocks (Andesite, Diorite, Granite, Tuff, Calcite, Dripstone, Deepslate)
+    ["mcl_core:andesite"]                      = {output = "mcl_core:cobble 1",                  time = 1.1, extra = {
+        {item = "mcl_core:flint 1", chance = 0.25},
+    }},
+    ["mcl_core:andesite_smooth"]               = {output = "mcl_core:cobble 1",                  time = 1.1},
+    ["mcl_core:diorite"]                       = {output = "mcl_nether:quartz 1",                time = 1.2, extra = {
+        {item = "mcl_nether:quartz 1", chance = 0.25},
+    }},
+    ["mcl_core:diorite_smooth"]                = {output = "mcl_nether:quartz 1",                time = 1.2, extra = {
+        {item = "mcl_nether:quartz 1", chance = 0.25},
+    }},
+    ["mcl_core:granite"]                       = {output = "mcl_core:redsand 1",                 time = 1.1, extra = {
+        {item = "mcl_nether:quartz 1", chance = 0.10},
+    }},
+    ["mcl_core:granite_smooth"]                = {output = "mcl_core:redsand 1",                 time = 1.1},
+    ["mcl_amethyst:calcite"]                   = {output = "mcl_bone_meal:bone_meal 1",          time = 1.1, extra = {
+        {item = "mcl_bone_meal:bone_meal 1", chance = 0.75},
+    }},
+    ["mcl_dripstone:dripstone_block"]          = {output = "mcl_core:clay_lump 1",               time = 1.1, extra = {
+        {item = "mcl_core:clay_lump 1", chance = 0.50},
+    }},
+    ["mcl_dripstone:pointed_dripstone"]        = {output = "mcl_core:clay_lump 1",               time = 1.0, extra = {
+        {item = "mcl_core:clay_lump 1", chance = 0.50},
+    }},
+    ["mcl_deepslate:deepslate"]                = {output = "mcl_deepslate:deepslate_cobbled 1",  time = 1.2},
+    ["mcl_deepslate:deepslate_cobbled"]        = {output = "mcl_core:gravel 1",                  time = 1.2, extra = {
+        {item = "mcl_core:flint 1", chance = 0.15},
+    }},
+    ["mcl_deepslate:tuff"]                     = {output = "mcl_core:flint 1",                   time = 1.4, extra = {
+        {item = "mcl_core:iron_nugget 1",  chance = 0.25},
+        {item = "mcl_core:gold_nugget 1",  chance = 0.20},
+        {item = "mcl_copper:raw_copper 1", chance = 0.25},
+    }},
+
+    -- Nether, Blackstone & Obsidian
+    ["mcl_nether:netherrack"]                  = {output = "mcl_nether:soul_sand 1",             time = 1.1, extra = {
+        {item = "mcl_core:gold_nugget 1", chance = 0.15},
+    }},
+    ["mcl_nether:soul_soil"]                   = {output = "mcl_nether:soul_sand 1",             time = 1.0},
+    ["mcl_blackstone:blackstone"]              = {output = "mcl_core:gravel 1",                  time = 1.2, extra = {
+        {item = "mcl_core:coal_lump 1", chance = 0.25},
+    }},
+    ["mcl_blackstone:basalt"]                  = {output = "mcl_core:gravel 1",                  time = 1.2, extra = {
+        {item = "mcl_mobitems:gunpowder 1", chance = 0.25},
+    }},
+    ["mcl_blackstone:basalt_smooth"]           = {output = "mcl_core:gravel 1",                  time = 1.2},
+    ["mcl_blackstone:basalt_polished"]         = {output = "mcl_core:gravel 1",                  time = 1.2},
+    ["mcl_end:end_stone"]                      = {output = "mcl_core:cobble 1",                  time = 1.4, extra = {
+        {item = "mcl_throwing:ender_pearl 1", chance = 0.15},
+    }},
+    ["mcl_core:obsidian"]                      = {output = "mcl_core:crying_obsidian 1",         time = 2.4, extra = {
+        {item = "mcl_core:obsidian 1", chance = 0.75},
+    }},
+    ["mcl_core:crying_obsidian"]               = {output = "mcl_core:obsidian 1",                time = 2.2, xp = 2, extra = {
+        {item = "mcl_mobitems:ghast_tear 1", chance = 0.25},
+    }},
+
+    -- Overworld & Deepslate Ores (with Create's 12.5% Stone/Deepslate bonus drop + XP)
+    ["mcl_core:stone_with_iron"]               = {output = "mcl_raw_ores:raw_iron 2",            time = 1.6, xp = 2, extra = {
+        {item = "mcl_raw_ores:raw_iron 1", chance = 0.50},
+        {item = "mcl_core:cobble 1",       chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_iron"]      = {output = "mcl_raw_ores:raw_iron 3",            time = 1.8, xp = 3, extra = {
+        {item = "mcl_raw_ores:raw_iron 1",             chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1",   chance = 0.125},
+    }},
+    ["mcl_copper:stone_with_copper"]           = {output = "mcl_copper:raw_copper 5",            time = 1.6, xp = 2, extra = {
+        {item = "mcl_copper:raw_copper 2", chance = 0.50},
+        {item = "mcl_core:cobble 1",       chance = 0.125},
+    }},
+    ["mcl_core:stone_with_copper"]             = {output = "mcl_copper:raw_copper 5",            time = 1.6, xp = 2, extra = {
+        {item = "mcl_copper:raw_copper 2", chance = 0.50},
+        {item = "mcl_core:cobble 1",       chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_copper"]    = {output = "mcl_copper:raw_copper 7",            time = 1.8, xp = 3, extra = {
+        {item = "mcl_copper:raw_copper 2",             chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1",   chance = 0.125},
+    }},
+    ["mcl_core:stone_with_gold"]               = {output = "mcl_raw_ores:raw_gold 2",            time = 1.6, xp = 3, extra = {
+        {item = "mcl_raw_ores:raw_gold 1", chance = 0.50},
+        {item = "mcl_core:cobble 1",       chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_gold"]      = {output = "mcl_raw_ores:raw_gold 3",            time = 1.8, xp = 4, extra = {
+        {item = "mcl_raw_ores:raw_gold 1",             chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1",   chance = 0.125},
+    }},
+    ["mcl_nether:nether_gold_ore"]             = {output = "mcl_core:gold_nugget 18",            time = 1.5, xp = 3, extra = {
+        {item = "mcl_core:gold_nugget 6",  chance = 0.50},
+        {item = "mcl_nether:netherrack 1", chance = 0.125},
+    }},
+    ["mcl_blackstone:blackstone_gilded"]       = {output = "mcl_core:gold_nugget 18",            time = 1.6, xp = 4, extra = {
+        {item = "mcl_core:gold_nugget 6",      chance = 0.50},
+        {item = "mcl_blackstone:blackstone 1", chance = 0.125},
+    }},
+    ["mcl_core:stone_with_coal"]               = {output = "mcl_core:coal_lump 2",               time = 1.4, xp = 2, extra = {
+        {item = "mcl_core:coal_lump 1", chance = 0.75},
+        {item = "mcl_core:cobble 1",    chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_coal"]      = {output = "mcl_core:coal_lump 3",               time = 1.6, xp = 2, extra = {
+        {item = "mcl_core:coal_lump 1",              chance = 0.75},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_core:stone_with_diamond"]            = {output = "mcl_core:diamond 2",                 time = 2.0, xp = 5, extra = {
+        {item = "mcl_core:diamond 1", chance = 0.50},
+        {item = "mcl_core:cobble 1",  chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_diamond"]   = {output = "mcl_core:diamond 2",                 time = 2.2, xp = 6, extra = {
+        {item = "mcl_core:diamond 1",                chance = 0.75},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_core:stone_with_emerald"]            = {output = "mcl_core:emerald 2",                 time = 2.0, xp = 5, extra = {
+        {item = "mcl_core:emerald 1", chance = 0.50},
+        {item = "mcl_core:cobble 1",  chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_emerald"]   = {output = "mcl_core:emerald 2",                 time = 2.2, xp = 6, extra = {
+        {item = "mcl_core:emerald 1",                chance = 0.75},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_core:stone_with_lapis"]              = {output = "mcl_core:lapis 10",                  time = 1.5, xp = 3, extra = {
+        {item = "mcl_core:lapis 4",  chance = 0.50},
+        {item = "mcl_core:cobble 1", chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_lapis"]     = {output = "mcl_core:lapis 12",                  time = 1.7, xp = 4, extra = {
+        {item = "mcl_core:lapis 4",                  chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_core:stone_with_redstone"]           = {output = "mesecons:redstone 6",                time = 1.5, xp = 3, extra = {
+        {item = "mesecons:redstone 2", chance = 0.50},
+        {item = "mcl_core:cobble 1",   chance = 0.125},
+    }},
+    ["mcl_core:stone_with_redstone_lit"]       = {output = "mesecons:redstone 6",                time = 1.5, xp = 3, extra = {
+        {item = "mesecons:redstone 2", chance = 0.50},
+        {item = "mcl_core:cobble 1",   chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_redstone"]  = {output = "mesecons:redstone 7",                time = 1.7, xp = 3, extra = {
+        {item = "mesecons:redstone 2",               chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_deepslate:deepslate_with_redstone_lit"] = {output = "mesecons:redstone 7",             time = 1.7, xp = 3, extra = {
+        {item = "mesecons:redstone 2",               chance = 0.50},
+        {item = "mcl_deepslate:deepslate_cobbled 1", chance = 0.125},
+    }},
+    ["mcl_nether:quartz_ore"]                  = {output = "mcl_nether:quartz 3",                time = 1.5, xp = 3, extra = {
+        {item = "mcl_nether:quartz 1",     chance = 0.50},
+        {item = "mcl_nether:netherrack 1", chance = 0.125},
+    }},
+    ["mcl_nether:ancient_debris"]              = {output = "mcl_nether:netherite_scrap 1",       time = 2.8, xp = 8, extra = {
+        {item = "mcl_nether:netherite_scrap 1", chance = 0.50},
+    }},
+
+    -- Raw Ores & Raw Ore Storage Blocks
+    ["mcl_raw_ores:raw_iron"]                  = {output = "mcl_core:iron_nugget 9",             time = 1.2, xp = 1, extra = {
+        {item = "mcl_core:iron_nugget 6", chance = 0.50},
+    }},
+    ["mcl_raw_ores:raw_gold"]                  = {output = "mcl_core:gold_nugget 9",             time = 1.2, xp = 2, extra = {
+        {item = "mcl_core:gold_nugget 6", chance = 0.50},
+    }},
+    ["mcl_copper:raw_copper"]                  = {output = "mcl_copper:copper_ingot 1",          time = 1.2, xp = 1, extra = {
+        {item = "mcl_copper:copper_ingot 1", chance = 0.50},
+    }},
+    ["mcl_raw_ores:raw_iron_block"]            = {output = "mcl_core:iron_ingot 9",              time = 2.4, xp = 9, extra = {
+        {item = "mcl_core:iron_ingot 3", chance = 0.75},
+    }},
+    ["mcl_raw_ores:raw_gold_block"]            = {output = "mcl_core:gold_ingot 9",              time = 2.4, xp = 14, extra = {
+        {item = "mcl_core:gold_ingot 3", chance = 0.75},
+    }},
+    ["mcl_copper:block_raw"]                   = {output = "mcl_copper:copper_ingot 9",          time = 2.4, xp = 9, extra = {
+        {item = "mcl_copper:copper_ingot 3", chance = 0.75},
+    }},
+
+    -- Mob Drops, Plants, Dyes & Storage Blocks
+    ["mcl_mobitems:bone"]                      = {output = "mcl_bone_meal:bone_meal 3",          time = 0.9, extra = {
+        {item = "mcl_bone_meal:bone_meal 3", chance = 0.50},
+    }},
+    ["mcl_bone_meal:bone_block"]               = {output = "mcl_bone_meal:bone_meal 9",          time = 1.2, extra = {
+        {item = "mcl_bone_meal:bone_meal 3", chance = 0.50},
+    }},
+    ["mcl_mobitems:blaze_rod"]                 = {output = "mcl_mobitems:blaze_powder 3",        time = 1.1, extra = {
+        {item = "mcl_mobitems:blaze_powder 3", chance = 0.50},
+    }},
+    ["mcl_nether:magma"]                       = {output = "mcl_mobitems:magma_cream 2",         time = 1.2, extra = {
+        {item = "mcl_mobitems:magma_cream 2", chance = 0.50},
+    }},
+    ["mcl_core:reeds"]                         = {output = "mcl_core:sugar 2",                   time = 0.9, extra = {
+        {item = "mcl_core:sugar 1", chance = 0.50},
+    }},
+    ["mcl_farming:wheat_item"]                 = {output = "mcl_farming:bread 1",                time = 1.0, extra = {
+        {item = "mcl_farming:wheat_seeds 2", chance = 0.50},
+    }},
+    ["mcl_farming:beetroot_item"]              = {output = "mcl_dyes:red 2",                     time = 0.9, extra = {
+        {item = "mcl_core:sugar 1", chance = 0.10},
+    }},
+    ["mcl_core:cactus"]                        = {output = "mcl_dyes:green 2",                   time = 0.9, extra = {
+        {item = "mcl_dyes:green 1", chance = 0.50},
+    }},
+    ["mcl_core:coal_lump"]                     = {output = "mcl_dyes:black 1",                   time = 0.9, extra = {
+        {item = "mcl_dyes:black 1", chance = 0.25},
+    }},
+    ["mcl_core:charcoal_lump"]                 = {output = "mcl_dyes:black 1",                   time = 0.9, extra = {
+        {item = "mcl_dyes:black 1", chance = 0.25},
+    }},
+    ["mcl_mobitems:ink_sac"]                   = {output = "mcl_dyes:black 2",                   time = 0.9, extra = {
+        {item = "mcl_dyes:black 1", chance = 0.50},
+    }},
+    ["mcl_nether:glowstone"]                   = {output = "mcl_nether:glowstone_dust 4",        time = 0.9},
+    ["mcl_nether:quartz_block"]                = {output = "mcl_nether:quartz 4",                time = 1.1},
+    ["mcl_nether:quartz_pillar"]               = {output = "mcl_nether:quartz 4",                time = 1.1},
+    ["mcl_nether:quartz_chiseled"]             = {output = "mcl_nether:quartz 4",                time = 1.1},
+    ["mcl_nether:quartz_smooth"]               = {output = "mcl_nether:quartz 4",                time = 1.1},
+    ["mcl_amethyst:amethyst_block"]            = {output = "mcl_amethyst:amethyst_shard 3",      time = 1.1, extra = {
+        {item = "mcl_amethyst:amethyst_shard 1", chance = 0.50},
+    }},
+    ["mcl_amethyst:amethyst_cluster"]          = {output = "mcl_amethyst:amethyst_shard 7",      time = 1.1, extra = {
+        {item = "mcl_amethyst:amethyst_shard 1", chance = 0.50},
+    }},
+    ["mcl_ocean:prismarine"]                   = {output = "mcl_ocean:prismarine_shard 4",       time = 1.2},
+    ["mcl_ocean:prismarine_brick"]             = {output = "mcl_ocean:prismarine_shard 9",       time = 1.4},
+    ["mcl_ocean:prismarine_dark"]              = {output = "mcl_ocean:prismarine_shard 8",       time = 1.4, extra = {
+        {item = "mcl_dyes:black 1", chance = 1.0},
+    }},
+    ["mcl_ocean:sea_lantern"]                  = {output = "mcl_ocean:prismarine_crystals 5",    time = 1.1},
+    ["mcl_core:clay"]                          = {output = "mcl_core:clay_lump 4",               time = 0.9},
+    ["mcl_core:brick_block"]                   = {output = "mcl_core:brick 4",                   time = 1.1},
+    ["mcl_nether:nether_brick"]                = {output = "mcl_nether:netherbrick 4",           time = 1.1},
+    ["mcl_colorblocks:hardened_clay"]          = {output = "mcl_core:redsand 1",                 time = 1.1, extra = {
+        {item = "mcl_core:clay_lump 1", chance = 0.25},
+    }},
+    ["mcl_core:cobweb"]                        = {output = "mcl_mobitems:string 2",              time = 0.9, extra = {
+        {item = "mcl_mobitems:string 1", chance = 0.50},
+    }},
+    ["mcl_mobitems:saddle"]                    = {output = "mcl_mobitems:leather 2",             time = 1.4, extra = {
+        {item = "mcl_mobitems:leather 2", chance = 0.50},
+        {item = "mcl_core:iron_ingot 1",  chance = 0.50},
+    }},
+    ["mcl_sculk:sculk"]                        = {output = "mcl_bone_meal:bone_meal 1",          time = 0.9, xp = 2},
+    ["mcl_sculk:catalyst"]                     = {output = "mcl_bone_meal:bone_meal 3",          time = 1.4, xp = 10},
+    ["mcl_sculk:shrieker"]                     = {output = "mcl_bone_meal:bone_meal 3",          time = 1.4, xp = 10},
 }
 
 for iname, rdef in pairs(DEFAULT_RECIPES) do
@@ -167,7 +401,28 @@ local function get_crushing_recipe_for_item(item_name, stack)
     end
 
     if core.get_item_group(item_name, "wool") > 0 then
-        return {output = "mcl_mobitems:string 4", time = 1.1}
+        return {
+            output = "mcl_mobitems:string 2",
+            time   = 1.0,
+            extra  = {{item = "mcl_mobitems:string 2", chance = 0.50}},
+        }
+    end
+
+    if core.get_item_group(item_name, "carpet") > 0 then
+        return {
+            output = "mcl_mobitems:string 1",
+            time   = 0.8,
+            extra  = {{item = "mcl_mobitems:string 1", chance = 0.50}},
+        }
+    end
+
+    if core.get_item_group(item_name, "hardened_clay") > 0 or
+       string.find(item_name, "^mcl_colorblocks:hardened_clay") then
+        return {
+            output = "mcl_core:redsand 1",
+            time   = 1.1,
+            extra  = {{item = "mcl_core:clay_lump 1", chance = 0.25}},
+        }
     end
 
     if core.get_item_group(item_name, "flower") > 0 then
@@ -175,24 +430,35 @@ local function get_crushing_recipe_for_item(item_name, stack)
         if res and res.item and not res.item:is_empty() then
             local dname = res.item:get_name()
             local dcnt  = math.max(1, res.item:get_count())
-            return {output = dname .. " " .. (dcnt * 2), time = 1.0, extra = {{item = dname .. " 2", chance = 0.50}}}
+            return {
+                output = dname .. " " .. (dcnt * 2),
+                time   = 0.9,
+                extra  = {
+                    {item = dname .. " 1",          chance = 0.50},
+                    {item = "mcl_dyes:green 1",     chance = 0.10},
+                },
+            }
         end
+    end
+
+    if core.get_item_group(item_name, "leaves") > 0 then
+        return {
+            output = "mcl_core:stick 1",
+            time   = 0.8,
+            extra  = {{item = "mcl_bone_meal:bone_meal 1", chance = 0.20}},
+        }
     end
 
     if string.find(item_name, "horse_armor") then
         if string.find(item_name, "iron") then
-            return {output = "mcl_core:iron_ingot 2", time = 1.8, extra = {{item = "mcl_core:iron_nugget 6", chance = 0.65}, {item = "mcl_mobitems:leather 1", chance = 0.50}}}
+            return {output = "mcl_core:iron_ingot 2", time = 1.6, extra = {{item = "mcl_core:iron_nugget 4", chance = 0.50}}}
         elseif string.find(item_name, "gold") then
-            return {output = "mcl_core:gold_ingot 2", time = 1.8, extra = {{item = "mcl_core:gold_nugget 6", chance = 0.65}, {item = "mcl_mobitems:leather 1", chance = 0.50}}}
+            return {output = "mcl_core:gold_ingot 2", time = 1.6, extra = {{item = "mcl_core:gold_nugget 4", chance = 0.50}}}
         elseif string.find(item_name, "diamond") then
-            return {output = "mcl_core:diamond 2", time = 2.2, extra = {{item = "mcl_core:diamond 1", chance = 0.50}, {item = "mcl_mobitems:leather 1", chance = 0.50}}}
+            return {output = "mcl_core:diamond 2", time = 2.0, extra = {{item = "mcl_core:diamond 1", chance = 0.50}}}
         elseif string.find(item_name, "leather") then
-            return {output = "mcl_mobitems:leather 3", time = 1.4, extra = {{item = "mcl_mobitems:leather 2", chance = 0.50}}}
+            return {output = "mcl_mobitems:leather 2", time = 1.2, extra = {{item = "mcl_mobitems:leather 2", chance = 0.50}}}
         end
-    end
-
-    if string.find(item_name, "mcl_bows:bow") or string.find(item_name, "mcl_bows:crossbow") or string.find(item_name, "fishing_rod") then
-        return {output = "mcl_mobitems:string 2", time = 1.2, extra = {{item = "mcl_core:stick 2", chance = 0.65}, {item = "mcl_core:iron_nugget 2", chance = 0.35}}}
     end
 
     local is_gear = (core.get_item_group(item_name, "tool") > 0 or
@@ -212,39 +478,16 @@ local function get_crushing_recipe_for_item(item_name, stack)
                           string.find(item_name, "pick") or string.find(item_name, "axe"))
 
         if string.find(item_name, "netherite_") then
-            return {
-                output = "mcl_core:diamond 1",
-                time   = 2.6,
-                xp     = 4,
-                extra  = {
-                    {item = "mcl_nether:netherite_scrap 1", chance = 0.50 * wear_ratio},
-                    {item = "mcl_core:gold_nugget 6",       chance = 0.65 * wear_ratio},
-                },
-            }
+            return {output = "mcl_core:diamond 1", time = 2.4, xp = 4, extra = {{item = "mcl_nether:netherite_scrap 1", chance = 0.50 * wear_ratio}}}
         elseif string.find(item_name, "diamond_") then
             local d_cnt = is_heavy and math.max(1, math.floor(2 * wear_ratio + 0.5)) or 1
-            return {
-                output = "mcl_core:diamond " .. d_cnt,
-                time   = 2.2,
-                xp     = 2,
-                extra  = {{item = "mcl_core:diamond 1", chance = 0.45 * wear_ratio}},
-            }
+            return {output = "mcl_core:diamond " .. d_cnt, time = 2.0, xp = 2}
         elseif string.find(item_name, "iron_") or string.find(item_name, "chainmail_") then
-            local base_nug = math.max(3, math.floor((is_heavy and 14 or 8) * wear_ratio))
-            return {
-                output = "mcl_core:iron_nugget " .. base_nug,
-                time   = 1.6,
-                xp     = 1,
-                extra  = {{item = "mcl_core:iron_nugget 5", chance = 0.55 * wear_ratio}},
-            }
+            local base_nug = math.max(3, math.floor((is_heavy and 12 or 6) * wear_ratio))
+            return {output = "mcl_core:iron_nugget " .. base_nug, time = 1.4, xp = 1}
         elseif string.find(item_name, "gold_") then
-            local base_nug = math.max(3, math.floor((is_heavy and 14 or 8) * wear_ratio))
-            return {
-                output = "mcl_core:gold_nugget " .. base_nug,
-                time   = 1.5,
-                xp     = 1,
-                extra  = {{item = "mcl_core:gold_nugget 5", chance = 0.55 * wear_ratio}},
-            }
+            local base_nug = math.max(3, math.floor((is_heavy and 12 or 6) * wear_ratio))
+            return {output = "mcl_core:gold_nugget " .. base_nug, time = 1.4, xp = 1}
         end
     end
     return nil
@@ -404,8 +647,8 @@ local function calc_spin_rad_per_sec(rpm)
 end
 
 local function calc_crush_speed_multiplier(rpm)
-    if not rpm or rpm < CONFIG.MIN_RPM then return 1.0 end
-    return math.max(1.0, (rpm / CONFIG.MIN_RPM) ^ CONFIG.RPM_SPEED_EXPONENT)
+    if not rpm or rpm < CONFIG.MIN_RPM then return 0.25 end
+    return math.max(0.25, (rpm / CONFIG.BASE_SPEED_RPM) ^ CONFIG.RPM_SPEED_EXPONENT)
 end
 
 local function get_node_abs_axis(param2)
@@ -417,12 +660,25 @@ local function get_node_abs_axis(param2)
 end
 
 local function neighbor_has_port_facing_wheel(enode, ename, emeta, axis, dir_to_wheel)
+    if not ename or ename == "air" or ename == "ignore" or kinetica.is_crushing_wheel(ename) then
+        return false
+    end
+    if kinetica.has_axle_port and kinetica.has_axle_port(enode, dir_to_wheel) then
+        return true
+    end
     if (kinetica.is_shaft and kinetica.is_shaft(ename)) or
-       core.get_item_group(ename, "shaft") > 0 then
+       core.get_item_group(ename, "shaft") > 0 or
+       string.find(ename, "shaft") then
         local s_ax = get_node_abs_axis(enode.param2)
         return (s_ax.x == axis.x and s_ax.y == axis.y and s_ax.z == axis.z)
     end
-    if kinetica.is_gearbox and kinetica.is_gearbox(ename) then
+    if (kinetica.is_cogwheel and kinetica.is_cogwheel(ename)) or
+       core.get_item_group(ename, "cogwheel") > 0 or
+       string.find(ename, "cog") then
+        local c_ax = get_node_abs_axis(enode.param2)
+        return (c_ax.x == axis.x and c_ax.y == axis.y and c_ax.z == axis.z)
+    end
+    if (kinetica.is_gearbox and kinetica.is_gearbox(ename)) or string.find(ename, "gearbox") then
         local is_vert = (string.find(ename, "vertical") ~= nil)
         if not is_vert then
             return (axis.y == 0)
@@ -434,16 +690,16 @@ local function neighbor_has_port_facing_wheel(enode, ename, emeta, axis, dir_to_
             return (math.abs(fdir.x) == axis.x and math.abs(fdir.z) == axis.z)
         end
     end
-    if kinetica.is_chain_drive and kinetica.is_chain_drive(ename) then
+    if (kinetica.is_chain_drive and kinetica.is_chain_drive(ename)) or string.find(ename, "chain_drive") then
         local cd_ax = get_node_abs_axis(enode.param2)
         return (cd_ax.x == axis.x and cd_ax.y == axis.y and cd_ax.z == axis.z)
     end
-    if kinetica.is_speed_controller and kinetica.is_speed_controller(ename) then
+    if (kinetica.is_speed_controller and kinetica.is_speed_controller(ename)) or string.find(ename, "speed_controller") then
         if axis.y ~= 0 then return false end
         local fdir = core.facedir_to_dir((enode.param2 or 0) % 4) or {x = 0, y = 0, z = 1}
         return (math.abs(fdir.x) == axis.x and math.abs(fdir.z) == axis.z)
     end
-    if kinetica.is_belt and kinetica.is_belt(ename) then
+    if (kinetica.is_belt and kinetica.is_belt(ename)) or string.find(ename, "belt") then
         if emeta:get_int("has_shaft") ~= 1 or axis.y ~= 0 then
             return false
         end
@@ -453,31 +709,61 @@ local function neighbor_has_port_facing_wheel(enode, ename, emeta, axis, dir_to_
         return (pulley_ax_x == axis.x and pulley_ax_z == axis.z)
     end
     if ename == "kinetica:water_wheel_big" or
-       (kinetica.is_water_wheel and kinetica.is_water_wheel(ename)) then
+       (kinetica.is_water_wheel and kinetica.is_water_wheel(ename)) or
+       string.find(ename, "water_wheel") then
         if axis.y ~= 0 then return false end
         local canon_p2 = (enode.param2 or 0) % 2
         local bdir     = core.facedir_to_dir(canon_p2) or {x = 0, y = 0, z = 1}
         return (math.abs(bdir.x) == axis.x and math.abs(bdir.z) == axis.z)
     end
-    if kinetica.is_turbine and kinetica.is_turbine(ename) then
+    if (kinetica.is_turbine and kinetica.is_turbine(ename)) or string.find(ename, "turbine") or string.find(ename, "windmill") then
         if axis.y ~= 0 then return false end
         local fdir = core.facedir_to_dir((enode.param2 or 0) % 4) or {x = 0, y = 0, z = 1}
-        return (dir_to_wheel.x == -fdir.x and dir_to_wheel.z == -fdir.z)
+        return (math.abs(dir_to_wheel.x) == math.abs(fdir.x) and math.abs(dir_to_wheel.z) == math.abs(fdir.z))
     end
-    if core.get_item_group(ename, "rotational_source") > 0 then
-        local src_ax = get_node_abs_axis(enode.param2)
-        return (src_ax.x == axis.x and src_ax.y == axis.y and src_ax.z == axis.z)
+    if core.get_item_group(ename, "rotational_source") > 0 or
+       core.get_item_group(ename, "kinetic_source") > 0 or
+       emeta:get_float("rpm") > 0 or
+       emeta:get_float("source_rpm") > 0 then
+        return true
     end
     return false
 end
 
+local function extract_meta_power(m)
+    local rpm  = m:get_float("rpm")
+    local sup  = m:get_int("network_supply_ku")
+    local ava  = m:get_int("rotational_power")
+    local spn  = m:get_int("spin_dir")
+
+    if (rpm <= 0 or sup <= 0) and m:get_int("source_active") == 1 then
+        local s_rpm = m:get_float("source_rpm")
+        local s_ku  = m:get_int("source_ku")
+        if s_rpm > 0 then rpm = s_rpm end
+        if s_ku > 0 then
+            sup = s_ku
+            ava = s_ku
+        end
+        if spn == 0 then spn = m:get_int("source_spin") end
+    end
+
+    if rpm > 0 and sup <= 0 then
+        sup = math.max(128, calc_wheel_demand_ku(rpm))
+        if ava <= 0 then ava = sup end
+    end
+    if spn == 0 then spn = m:get_int("local_spin") end
+    if spn == 0 then spn = 1 end
+
+    return (rpm >= CONFIG.MIN_RPM and sup > 0), rpm, sup, ava, spn
+end
+
 local function read_wheel_direct_power(pos, axis, meta)
-    local now = math.floor(core.get_gametime())
     local ends = {
         {x =  axis.x, y =  axis.y, z =  axis.z},
         {x = -axis.x, y = -axis.y, z = -axis.z},
     }
 
+    local has_connected_port = false
     for _, d_out in ipairs(ends) do
         local epos         = {x = pos.x + d_out.x, y = pos.y + d_out.y, z = pos.z + d_out.z}
         local dir_to_wheel = {x = -d_out.x,        y = -d_out.y,        z = -d_out.z}
@@ -486,45 +772,38 @@ local function read_wheel_direct_power(pos, axis, meta)
         local emeta        = core.get_meta(epos)
 
         if neighbor_has_port_facing_wheel(enode, ename, emeta, axis, dir_to_wheel) then
-            local esup = emeta:get_int("network_supply_ku")
-            local erpm = emeta:get_float("rpm")
-            local eava = emeta:get_int("rotational_power")
-            local espn = emeta:get_int("spin_dir")
-            local elit = emeta:get_int("lit_until")
-
-            if (esup <= 0 or erpm <= 0) and emeta:get_int("source_active") == 1 then
-                esup = emeta:get_int("source_ku")
-                erpm = emeta:get_float("source_rpm")
-                eava = esup
-                espn = emeta:get_int("source_spin")
-                elit = now + 2
-            end
-            if espn == 0 then espn = emeta:get_int("local_spin") end
-            if espn == 0 then espn = 1 end
-
-            local port_powered = (esup > 0 and erpm > 0 and (elit == 0 or now <= elit + 2))
-            if port_powered then
+            has_connected_port = true
+            local ok, erpm, esup, eava, espn = extract_meta_power(emeta)
+            if ok then
                 return true, erpm, esup, eava, espn
-            end
-
-            local msup = meta:get_int("network_supply_ku")
-            local mrpm = meta:get_float("rpm")
-            local mava = meta:get_int("rotational_power")
-            local mspn = meta:get_int("spin_dir")
-            if mspn == 0 then mspn = 1 end
-            if msup > 0 and mrpm > 0 and now <= meta:get_int("lit_until") + 1 then
-                return true, mrpm, msup, mava, mspn
             end
         end
     end
+
+    -- Fallback to wheel's own network metadata if a port neighbor is attached
+    if has_connected_port then
+        local ok, mrpm, msup, mava, mspn = extract_meta_power(meta)
+        if ok then
+            return true, mrpm, msup, mava, mspn
+        end
+    end
+
     return false, 0, 0, 0, 1
 end
 
 local function is_valid_middle_space(name)
-    if name == "air" then return true end
+    if not name or name == "air" then return true end
     if kinetica.is_belt and kinetica.is_belt(name) then return true end
+    if string.find(name, "belt") or string.find(name, "depot") or
+       string.find(name, "chute") or string.find(name, "hopper") then
+        return true
+    end
     if name == "kinetica:depot" or core.get_item_group(name, "kinetica_depot") > 0 then return true end
     if kinetica.is_chute and kinetica.is_chute(name) then return true end
+    local ndef = core.registered_nodes[name]
+    if ndef and (not ndef.walkable or ndef.buildable_to) then
+        return true
+    end
     return false
 end
 
@@ -539,13 +818,17 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
         }
     elseif axis.x ~= 0 then
         perp_dirs = {
-            {x = 0, y = 0, z =  1},
-            {x = 0, y = 0, z = -1},
+            {x = 0, y =  0, z =  1},
+            {x = 0, y =  0, z = -1},
+            {x = 0, y =  1, z =  0},
+            {x = 0, y = -1, z =  0},
         }
     else
         perp_dirs = {
-            {x =  1, y = 0, z = 0},
-            {x = -1, y = 0, z = 0},
+            {x =  1, y =  0, z = 0},
+            {x = -1, y =  0, z = 0},
+            {x =  0, y =  1, z = 0},
+            {x =  0, y = -1, z = 0},
         }
     end
 
@@ -570,12 +853,13 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                         local eff_rpm    = my_pow and my_rpm or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_rpm or 0)
                         local eff_sup    = my_pow and my_sup or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_sup or 0)
                         local eff_ava    = my_pow and my_ava or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_ava or 0)
+                        local eff_spin   = my_pow and my_spin or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and (-p_spin) or 1)
                         local pair_ready = false
                         local pair_rpm   = 0
 
                         if my_pow and p_pow and my_rpm >= CONFIG.MIN_RPM and p_rpm >= CONFIG.MIN_RPM then
                             pair_ready = true
-                            pair_rpm   = math.min(my_rpm, p_rpm)
+                            pair_rpm   = math.max(my_rpm, p_rpm)
                         elseif CONFIG.ALLOW_GEAR_MESH_PARTNER and eff_pow and eff_rpm >= CONFIG.MIN_RPM then
                             pair_ready = true
                             pair_rpm   = eff_rpm
@@ -592,25 +876,31 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                         }
 
                         local feed_dir        = {x = 0, y = -1, z = 0}
-                        local inward_vis_spin = 1
+                        local inward_vis_spin = eff_spin
+                        local mid_name        = core.get_node(mid_pos).name
 
-                        if axis.y == 0 then
-                            if dist == 2 and kinetica.is_belt and kinetica.is_belt(core.get_node(mid_pos).name) then
+                        if axis.y == 0 and d.y == 0 then
+                            if dist == 2 and ((kinetica.is_belt and kinetica.is_belt(mid_name)) or string.find(mid_name, "belt")) then
                                 local bnode = core.get_node(mid_pos)
                                 local bdir  = core.facedir_to_dir((bnode.param2 or 0) % 4)
                                 if bdir then
-                                    feed_dir = {x = -bdir.x, y = 0, z = -bdir.z}
+                                    local tsign = string.find(bnode.name, "_rev", 1, true) and -1 or 1
+                                    feed_dir = {x = -bdir.x * tsign, y = 0, z = -bdir.z * tsign}
                                 end
                             end
                             local side_sign = (d.x + d.z)
                             inward_vis_spin = (side_sign > 0) and 1 or -1
                         else
                             local horiz_perp = {x = -d.z, y = 0, z = d.x}
-                            if dist == 2 and kinetica.is_belt and kinetica.is_belt(core.get_node(mid_pos).name) then
+                            if horiz_perp.x == 0 and horiz_perp.z == 0 then
+                                horiz_perp = (axis.x ~= 0) and {x = 0, y = 0, z = 1} or {x = 1, y = 0, z = 0}
+                            end
+                            if dist == 2 and ((kinetica.is_belt and kinetica.is_belt(mid_name)) or string.find(mid_name, "belt")) then
                                 local bnode = core.get_node(mid_pos)
                                 local bdir  = core.facedir_to_dir((bnode.param2 or 0) % 4)
                                 if bdir then
-                                    horiz_perp = {x = -bdir.x, y = 0, z = -bdir.z}
+                                    local tsign = string.find(bnode.name, "_rev", 1, true) and -1 or 1
+                                    horiz_perp = {x = -bdir.x * tsign, y = 0, z = -bdir.z * tsign}
                                 end
                             end
                             feed_dir = {
@@ -618,7 +908,7 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                                 y = 0,
                                 z = (horiz_perp.z ~= 0) and (horiz_perp.z > 0 and 1 or -1) or 0,
                             }
-                            local side_sign = (d.x + d.z)
+                            local side_sign = (d.x + d.y + d.z)
                             inward_vis_spin = (side_sign > 0) and 1 or -1
                         end
 
@@ -632,6 +922,7 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                             eff_rpm         = eff_rpm,
                             eff_sup         = eff_sup,
                             eff_ava         = eff_ava,
+                            eff_spin        = eff_spin,
                             pair_ready      = pair_ready,
                             pair_rpm        = pair_rpm,
                             feed_dir        = feed_dir,
@@ -821,7 +1112,7 @@ local function format_crushing_wheel_glasses_info(pos, node)
         local mmeta = pair.is_master and meta or core.get_meta(pair.partner_pos)
         item_str    = mmeta:get_string("crushing_item")
         prog_pct    = mmeta:get_int("crush_pct")
-        pair_str    = (pair.dist == 2) and "Paired (Touching Over Middle Belt)" or "Paired (Touching Directly)"
+        pair_str    = (pair.dist == 2) and "Paired (Touching Over Middle Gap/Belt)" or "Paired (Touching Directly)"
         feed_str    = dir_to_compass(pair.feed_dir)
 
         if pair.pair_ready then
@@ -847,7 +1138,7 @@ local function format_crushing_wheel_glasses_info(pos, node)
         "│  Mechanical Crushing Wheel",
         "│  ● STATE    : " .. state_str,
         LINE_NET,
-        kv_row("Speed",       string.format("%.1f RPM  (%.1fx Crush Speed)", eff_pow and eff_rpm or 0, speed_mult)),
+        kv_row("Speed",       string.format("%.1f RPM  (%.2fx Crush Speed)", eff_pow and eff_rpm or 0, speed_mult)),
         kv_row("Wheel Load",  string.format("-%d KU", demand)),
         kv_row("Net Pool",    string.format("%d / %d KU Avail", eff_pow and avail or 0, supply)),
         kv_row("Net Stress",  make_bar(eff_pow and used or 0, supply)),
@@ -869,7 +1160,7 @@ local function spawn_crush_xp_orbs(seam_pos, feed_dir, total_xp)
     if not CONFIG.SPAWN_CRUSH_XP_ORBS or not total_xp or total_xp <= 0 then return end
     local xp_pos = {
         x = seam_pos.x + feed_dir.x * 0.35,
-        y = (feed_dir.y < 0) and (seam_pos.y - 0.45) or (seam_pos.y + 0.10),
+        y = (feed_dir.y < 0) and (seam_pos.y - 0.25) or (seam_pos.y + 0.20),
         z = seam_pos.z + feed_dir.z * 0.35,
     }
     if mcl_experience and mcl_experience.throw_xp then
@@ -891,14 +1182,20 @@ local function try_insert_into_container_or_depot(target_pos, stack)
     local tinv  = tmeta and tmeta:get_inventory()
     if not tinv then return stack end
 
-    for _, listname in ipairs({"input", "main", "dst"}) do
+    local is_depot = (tname == "kinetica:depot" or
+                      core.get_item_group(tname, "kinetica_depot") > 0 or
+                      string.find(tname, "depot") ~= nil)
+
+    local candidate_lists = is_depot
+        and {"output", "main"}
+        or  {"main", "input", "dst"}
+
+    for _, listname in ipairs(candidate_lists) do
         if tinv:get_size(listname) > 0 and tinv:room_for_item(listname, stack) then
             local leftover = tinv:add_item(listname, stack)
             local timer    = core.get_node_timer(target_pos)
             if timer and not timer:is_started() and
-               (tname == "kinetica:depot" or
-                core.get_item_group(tname, "kinetica_depot") > 0 or
-                (kinetica.is_chute and kinetica.is_chute(tname))) then
+               (is_depot or (kinetica.is_chute and kinetica.is_chute(tname)) or string.find(tname, "chute")) then
                 timer:start(0.20)
             end
             return leftover
@@ -908,15 +1205,45 @@ local function try_insert_into_container_or_depot(target_pos, stack)
     return stack
 end
 
+local function compute_safe_eject_pos(seam_pos, feed_dir)
+    if feed_dir.y < 0 then
+        local below_pos  = vector.round({x = seam_pos.x, y = seam_pos.y - 1, z = seam_pos.z})
+        local below_node = core.get_node(below_pos)
+        local below_def  = core.registered_nodes[below_node.name]
+        local is_belt_below = (kinetica.is_belt and kinetica.is_belt(below_node.name)) or string.find(below_node.name, "belt")
+
+        if below_node.name == "air" or (below_def and not below_def.walkable) then
+            return {x = seam_pos.x, y = seam_pos.y - 0.52, z = seam_pos.z}
+        elseif is_belt_below then
+            return {x = seam_pos.x, y = below_pos.y + 0.30, z = seam_pos.z}
+        else
+            -- Solid floor directly under the wheels: spawn above the floor surface so items never bury
+            return {x = seam_pos.x, y = seam_pos.y - 0.20, z = seam_pos.z}
+        end
+    else
+        return {
+            x = seam_pos.x + feed_dir.x * 0.48,
+            y = seam_pos.y + 0.25,
+            z = seam_pos.z + feed_dir.z * 0.48,
+        }
+    end
+end
+
 local function eject_crushed_outputs(master_pos, partner_pos, seam_pos, feed_dir, outputs, total_xp)
+    local pair_hash = core.hash_node_position(master_pos)
     local check_containers = {
+        vector.round(seam_pos),
         vector.round({x = seam_pos.x + feed_dir.x, y = seam_pos.y + feed_dir.y, z = seam_pos.z + feed_dir.z}),
+        vector.round({x = seam_pos.x, y = seam_pos.y - 1, z = seam_pos.z}),
         {x = master_pos.x,  y = master_pos.y - 1,  z = master_pos.z},
         {x = partner_pos.x, y = partner_pos.y - 1, z = partner_pos.z},
     }
 
+    local spawn_p = compute_safe_eject_pos(seam_pos, feed_dir)
+
     for _, out_str in ipairs(outputs) do
-        local stack = ItemStack(out_str)
+        local resolved_str = resolve_valid_itemstring(out_str)
+        local stack        = ItemStack(resolved_str)
         if not stack:is_empty() then
             for _, cpos in ipairs(check_containers) do
                 stack = try_insert_into_container_or_depot(cpos, stack)
@@ -924,21 +1251,19 @@ local function eject_crushed_outputs(master_pos, partner_pos, seam_pos, feed_dir
             end
 
             if not stack:is_empty() then
-                local spawn_p = {
-                    x = seam_pos.x + feed_dir.x * 0.45,
-                    y = (feed_dir.y < 0) and (seam_pos.y - 0.58) or (seam_pos.y - 0.12),
-                    z = seam_pos.z + feed_dir.z * 0.45,
-                }
                 local obj = core.add_item(spawn_p, stack)
                 if obj then
                     local ent = obj:get_luaentity()
                     if ent then
-                        ent._kinetica_crush_cd = (core.get_us_time() / 1e6) + 1.10
+                        ent._kinetica_vacuumed        = false
+                        ent._kinetica_crushed_by_pair = pair_hash
+                        ent._kinetica_crush_cd        = (core.get_us_time() / 1e6) + 2.50
                     end
+                    obj:set_acceleration({x = 0, y = -9.81, z = 0})
                     obj:set_velocity({
-                        x = feed_dir.x * 1.5,
-                        y = (feed_dir.y < 0) and -1.2 or 0.05,
-                        z = feed_dir.z * 1.5,
+                        x = feed_dir.x * 1.4,
+                        y = (feed_dir.y < 0) and -1.0 or 0.10,
+                        z = feed_dir.z * 1.4,
                     })
                 end
             end
@@ -952,21 +1277,62 @@ end
 
 local function is_in_intake_zone(ipos, master_pos, partner_pos, seam_pos, axis, feed_dir)
     if axis.y ~= 0 then
-        if math.abs(ipos.y - seam_pos.y) > 0.80 then
+        if math.abs(ipos.y - seam_pos.y) > 1.10 then
             return false
         end
         local rel_x = ipos.x - seam_pos.x
         local rel_z = ipos.z - seam_pos.z
-        local along = rel_x * feed_dir.x + rel_z * feed_dir.z
-        return (along <= 0.45)
-    else
-        if ipos.y < seam_pos.y - 0.72 or ipos.y > seam_pos.y + 1.55 then
+        if hypot2(rel_x, rel_z) > 1.55 then
             return false
         end
-        local d1 = math.hypot(ipos.x - master_pos.x,  ipos.z - master_pos.z)
-        local d2 = math.hypot(ipos.x - partner_pos.x, ipos.z - partner_pos.z)
-        local ds = math.hypot(ipos.x - seam_pos.x,    ipos.z - seam_pos.z)
-        return (d1 <= 1.15 or d2 <= 1.15 or ds <= 1.15)
+        local along = rel_x * feed_dir.x + rel_z * feed_dir.z
+        return (along <= 0.65)
+    else
+        if ipos.y < seam_pos.y - 0.95 or ipos.y > seam_pos.y + 2.10 then
+            return false
+        end
+        local d1 = hypot2(ipos.x - master_pos.x,  ipos.z - master_pos.z)
+        local d2 = hypot2(ipos.x - partner_pos.x, ipos.z - partner_pos.z)
+        local ds = hypot2(ipos.x - seam_pos.x,    ipos.z - seam_pos.z)
+        return (d1 <= 1.45 or d2 <= 1.45 or ds <= 1.45)
+    end
+end
+
+local function pull_from_intake_inventories(seam_pos, master_pos, partner_pos, dist)
+    local candidates = {}
+    if dist == 2 then
+        candidates[#candidates + 1] = vector.round(seam_pos)
+    end
+    candidates[#candidates + 1] = vector.round({x = seam_pos.x, y = seam_pos.y + 1, z = seam_pos.z})
+    candidates[#candidates + 1] = {x = master_pos.x,  y = master_pos.y + 1,  z = master_pos.z}
+    candidates[#candidates + 1] = {x = partner_pos.x, y = partner_pos.y + 1, z = partner_pos.z}
+
+    for _, cpos in ipairs(candidates) do
+        local cnode = core.get_node(cpos)
+        local cname = cnode.name
+        local is_depot  = (cname == "kinetica:depot" or core.get_item_group(cname, "kinetica_depot") > 0 or string.find(cname, "depot"))
+        local is_feeder = is_depot or (kinetica.is_chute and kinetica.is_chute(cname)) or string.find(cname, "chute") or string.find(cname, "hopper")
+
+        if is_feeder then
+            local cinv = core.get_meta(cpos):get_inventory()
+            if cinv then
+                for _, lname in ipairs({"input", "main"}) do
+                    local sz = cinv:get_size(lname)
+                    for slot = 1, sz do
+                        local st = cinv:get_stack(lname, slot)
+                        if not st:is_empty() and get_crushing_recipe_for_item(st:get_name(), st) then
+                            local spawned = core.add_item({x = seam_pos.x, y = seam_pos.y + 0.30, z = seam_pos.z}, st)
+                            if spawned then
+                                cinv:set_stack(lname, slot, ItemStack(""))
+                                local dt = core.get_node_timer(cpos)
+                                if dt and not dt:is_started() then dt:start(0.20) end
+                                return
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 
@@ -976,6 +1342,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
     local feed_dir    = pair.feed_dir
     local eff_rpm     = pair.pair_rpm
     local now_sec     = core.get_us_time() / 1e6
+    local pair_hash   = core.hash_node_position(master_pos)
 
     if CONFIG.DEAL_CRUSH_DAMAGE then
         local dmg_tick = (meta:get_int("dmg_tick") + 1) % 8
@@ -995,17 +1362,21 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
         end
     end
 
+    pull_from_intake_inventories(seam_pos, master_pos, partner_pos, pair.dist)
+
     local target_obj    = nil
     local target_ent    = nil
     local target_stack  = nil
     local target_recipe = nil
     local intake_items  = {}
 
-    for _, obj in ipairs(core.get_objects_inside_radius(seam_pos, 1.95)) do
+    for _, obj in ipairs(core.get_objects_inside_radius(seam_pos, 2.60)) do
         local ent  = obj:get_luaentity()
         local ipos = obj:get_pos()
 
-        if ent and ipos and is_in_intake_zone(ipos, master_pos, partner_pos, seam_pos, axis, feed_dir) then
+        if ent and ent.name ~= ENTITY_NAME and ipos and
+           is_in_intake_zone(ipos, master_pos, partner_pos, seam_pos, axis, feed_dir) then
+
             if ent.name == "__builtin:falling_node" and ent.node and ent.node.name then
                 local fn_name = ent.node.name
                 obj:remove()
@@ -1017,37 +1388,38 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                 end
             end
 
-            if ent and ent.name == "__builtin:item" and ent.itemstring and
-               (not ent._kinetica_crush_cd or now_sec >= ent._kinetica_crush_cd) then
+            local same_pair_cd = (ent and ent._kinetica_crushed_by_pair == pair_hash) and
+                                 (ent._kinetica_crush_cd and now_sec < ent._kinetica_crush_cd)
+
+            if ent and ent.name == "__builtin:item" and ent.itemstring and ent.itemstring ~= "" and not same_pair_cd then
                 local st  = ItemStack(ent.itemstring)
                 local rec = get_crushing_recipe_for_item(st:get_name(), st)
 
                 local dx         = seam_pos.x - ipos.x
                 local dz         = seam_pos.z - ipos.z
-                local dist_horiz = math.hypot(dx, dz)
+                local dist_horiz = hypot2(dx, dz)
+                local hold_y     = seam_pos.y + 0.15
+
+                -- Pull both crushable and non-crushable items toward the center seam
+                ent._kinetica_vacuumed = true
+                obj:set_acceleration({x = 0, y = 0, z = 0})
+                obj:set_velocity({x = 0, y = 0, z = 0})
+
+                if dist_horiz > 0.22 then
+                    local step = math.min(dist_horiz, CONFIG.DRAG_PULL_SPEED * CONFIG.TIMER_INTERVAL)
+                    local nx   = ipos.x + (dx / dist_horiz) * step
+                    local nz   = ipos.z + (dz / dist_horiz) * step
+                    local ny   = math.max(hold_y, ipos.y - 0.10)
+                    obj:set_pos({x = nx, y = ny, z = nz})
+                else
+                    obj:set_pos({
+                        x = seam_pos.x,
+                        y = hold_y,
+                        z = seam_pos.z,
+                    })
+                end
 
                 if rec then
-                    local hold_y = seam_pos.y + 0.08
-                    if dist_horiz > 0.20 then
-                        local step = math.min(dist_horiz, CONFIG.DRAG_PULL_SPEED * CONFIG.TIMER_INTERVAL)
-                        local nx   = ipos.x + (dx / dist_horiz) * step
-                        local nz   = ipos.z + (dz / dist_horiz) * step
-                        local ny   = math.max(hold_y, ipos.y - 0.08)
-                        obj:set_pos({x = nx, y = ny, z = nz})
-                        obj:set_velocity({
-                            x = (dx / dist_horiz) * CONFIG.DRAG_PULL_SPEED,
-                            y = (ipos.y < hold_y) and 1.2 or 0.45,
-                            z = (dz / dist_horiz) * CONFIG.DRAG_PULL_SPEED,
-                        })
-                    else
-                        obj:set_pos({
-                            x = seam_pos.x + (math.random() - 0.5) * 0.05,
-                            y = hold_y,
-                            z = seam_pos.z + (math.random() - 0.5) * 0.05,
-                        })
-                        obj:set_velocity({x = 0, y = 0.49, z = 0})
-                    end
-
                     intake_items[#intake_items + 1] = {
                         obj  = obj,
                         ent  = ent,
@@ -1066,7 +1438,10 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                         target_stack          = st
                         target_recipe         = rec
                     end
-                elseif dist_horiz <= 0.32 then
+                elseif dist_horiz <= 0.25 then
+                    -- Non-crushable item reached the seam: pass it cleanly through the wheels
+                    ent._kinetica_vacuumed = false
+                    obj:set_acceleration({x = 0, y = -9.81, z = 0})
                     local leftover  = st
                     local below_pos = vector.round({x = seam_pos.x + feed_dir.x, y = seam_pos.y + feed_dir.y, z = seam_pos.z + feed_dir.z})
                     leftover = try_insert_into_container_or_depot(below_pos, leftover)
@@ -1074,12 +1449,9 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                         obj:remove()
                     else
                         ent:set_item(leftover:to_string())
-                        ent._kinetica_crush_cd = now_sec + 1.10
-                        obj:set_pos({
-                            x = seam_pos.x + feed_dir.x * 0.40,
-                            y = (feed_dir.y < 0) and (seam_pos.y - 0.55) or (seam_pos.y - 0.10),
-                            z = seam_pos.z + feed_dir.z * 0.40,
-                        })
+                        ent._kinetica_crushed_by_pair = pair_hash
+                        ent._kinetica_crush_cd        = now_sec + 1.80
+                        obj:set_pos(compute_safe_eject_pos(seam_pos, feed_dir))
                     end
                 end
             end
@@ -1087,6 +1459,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
     end
 
     if not target_obj or not target_stack or not target_recipe then
+        PAIR_CRUSH_STATE[pair_hash] = nil
         meta:set_string("crushing_item", "")
         meta:set_int("crush_pct", 0)
         return
@@ -1124,19 +1497,32 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
 
     local total_count = target_stack:get_count()
     local batch_count = math.min(CONFIG.MAX_BATCH_SIZE, total_count)
-    local idef        = core.registered_items[target_stack:get_name()]
-    local clean_desc  = (idef and idef.description) and string.match(idef.description, "^[^\n%(]+") or target_stack:get_name()
+    local item_name   = target_stack:get_name()
+    local idef        = core.registered_items[item_name]
+    local clean_desc  = (idef and idef.description) and string.match(idef.description, "^[^\n%(]+") or item_name
     meta:set_string("crushing_item", string.format("%s x%d", clean_desc, batch_count))
 
     local speed_mult = calc_crush_speed_multiplier(eff_rpm)
     local stack_mult = 1.0 + CONFIG.STACK_TIME_LOG_FACTOR * math.log(math.max(1, batch_count))
     local total_need = math.max(0.10, (target_recipe.time * stack_mult) / speed_mult)
 
-    target_ent._kinetica_crush_prog = (target_ent._kinetica_crush_prog or 0) + CONFIG.TIMER_INTERVAL
-    local pct = math.min(100, math.floor((target_ent._kinetica_crush_prog / total_need) * 100))
+    local pstate = PAIR_CRUSH_STATE[pair_hash]
+    if not pstate or pstate.item_name ~= item_name then
+        pstate = {
+            item_name = item_name,
+            prog      = target_ent._kinetica_crush_prog or 0,
+        }
+        PAIR_CRUSH_STATE[pair_hash] = pstate
+    end
+
+    local new_prog = math.max(pstate.prog, target_ent._kinetica_crush_prog or 0) + CONFIG.TIMER_INTERVAL
+    pstate.prog                    = new_prog
+    target_ent._kinetica_crush_prog = new_prog
+
+    local pct = math.min(100, math.floor((new_prog / total_need) * 100))
     meta:set_int("crush_pct", pct)
 
-    local part_tex = resolve_item_particle_texture(target_stack:get_name())
+    local part_tex = resolve_item_particle_texture(item_name)
     core.add_particlespawner({
         amount     = 5,
         time       = CONFIG.TIMER_INTERVAL,
@@ -1151,8 +1537,8 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
         texture    = part_tex,
     })
 
-    if target_ent._kinetica_crush_prog >= total_need then
-        local out_base  = ItemStack(target_recipe.output)
+    if new_prog >= total_need then
+        local out_base  = ItemStack(resolve_valid_itemstring(target_recipe.output))
         local out_name  = out_base:get_name()
         local out_per_1 = math.max(1, out_base:get_count())
         local total_pri = out_per_1 * batch_count
@@ -1165,7 +1551,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
         end
 
         for _, bonus in ipairs(target_recipe.extra or {}) do
-            local b_stack = ItemStack(bonus.item)
+            local b_stack = ItemStack(resolve_valid_itemstring(bonus.item))
             local b_name  = b_stack:get_name()
             local b_per_1 = math.max(1, b_stack:get_count())
             local b_total = 0
@@ -1189,6 +1575,8 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                 end
             end
         end
+
+        PAIR_CRUSH_STATE[pair_hash] = nil
 
         if total_count > batch_count then
             target_stack:set_count(total_count - batch_count)
@@ -1232,12 +1620,6 @@ local function wheel_timer(pos, elapsed)
     local is_active = eff_pow and (eff_rpm >= CONFIG.MIN_RPM)
     local demand_ku = is_active and calc_wheel_demand_ku(eff_rpm) or 0
     meta:set_int("machine_demand_ku", demand_ku)
-
-    if not eff_pow then
-        meta:set_float("rpm", 0)
-        meta:set_int("network_supply_ku", 0)
-        meta:set_int("rotational_power", 0)
-    end
 
     local speed_rad = 0
     if is_active then
@@ -1316,7 +1698,15 @@ local function on_wheel_rightclick(pos, node, clicker, itemstack, pointed_thing)
         local drop_st  = ItemStack(itemstack:to_string())
         drop_st:set_count(take_cnt)
         itemstack:take_item(take_cnt)
-        core.add_item({x = pos.x, y = pos.y + 0.65, z = pos.z}, drop_st)
+
+        local meta = core.get_meta(pos)
+        local axis = kinetica.get_crushing_wheel_axis(node.param2)
+        local my_pow, my_rpm, my_sup, my_ava, my_spin = read_wheel_direct_power(pos, axis, meta)
+        local pair = find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_spin)
+        local spawn_pos = pair and {x = pair.seam_pos.x, y = pair.seam_pos.y + 0.25, z = pair.seam_pos.z}
+                               or  {x = pos.x,           y = pos.y + 0.65,           z = pos.z}
+
+        core.add_item(spawn_pos, drop_st)
         return itemstack
     end
 
@@ -1325,7 +1715,7 @@ end
 
 local function wake_nearby_wheels(pos)
     for dx = -2, 2 do
-        for dy = -1, 1 do
+        for dy = -2, 2 do
             for dz = -2, 2 do
                 local npos = {x = pos.x + dx, y = pos.y + dy, z = pos.z + dz}
                 if kinetica.is_crushing_wheel(core.get_node(npos).name) then
@@ -1393,6 +1783,7 @@ core.register_node(IDLE_NAME, {
 
     on_destruct = function(pos)
         remove_wheel_entity(pos)
+        PAIR_CRUSH_STATE[core.hash_node_position(pos)] = nil
     end,
 
     after_dig_node = function(pos)
@@ -1424,6 +1815,7 @@ core.register_node(ACTIVE_NAME, {
 
     on_destruct = function(pos)
         remove_wheel_entity(pos)
+        PAIR_CRUSH_STATE[core.hash_node_position(pos)] = nil
     end,
 
     after_dig_node = function(pos)
@@ -1448,22 +1840,49 @@ end
 core.register_alias(IDLE_NAME .. "_gap", ACTIVE_NAME)
 
 if kinetica.register_kinetic_machine then
-    for _, nname in ipairs({IDLE_NAME, ACTIVE_NAME}) do
-        kinetica.register_kinetic_machine(nname, {
-            min_rpm = CONFIG.MIN_RPM,
-            get_demand_ku = function(rpm, pos, node)
-                if pos and node then
-                    local axis = kinetica.get_crushing_wheel_axis(node.param2)
-                    local meta = core.get_meta(pos)
-                    local has_port_power = read_wheel_direct_power(pos, axis, meta)
-                    if not has_port_power then
-                        return 0
-                    end
-                end
-                return calc_wheel_demand_ku(rpm)
-            end,
-        })
-    end
+    local machine_def = {
+        can_ride_piston = false,
+        min_rpm         = CONFIG.MIN_RPM,
+        has_axle_port   = function(node, d)
+            local axis = kinetica.get_crushing_wheel_axis(node.param2)
+            return (math.abs(d.x) == axis.x) and
+                   (math.abs(d.y) == axis.y) and
+                   (math.abs(d.z) == axis.z)
+        end,
+        get_demand_ku   = function(rpm, pos, node)
+            return calc_wheel_demand_ku(rpm)
+        end,
+        set_idle        = function(pos, node, reason_text)
+            local axis = kinetica.get_crushing_wheel_axis(node.param2)
+            sync_crushing_wheel_entity(pos, axis, 0, CONFIG.WHEEL_SCALE_BELT_GAP)
+            local meta = core.get_meta(pos)
+            meta:set_float("rpm", 0)
+            meta:set_int("network_supply_ku", 0)
+            meta:set_int("rotational_power", 0)
+            meta:set_string("crushing_item", "")
+            meta:set_int("crush_pct", 0)
+            meta:set_string("glasses_info", format_crushing_wheel_glasses_info(pos, node))
+            wake_nearby_wheels(pos)
+        end,
+        wake            = function(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
+            local meta = core.get_meta(pos)
+            if rpm and rpm > 0 then
+                meta:set_float("rpm", rpm)
+                meta:set_int("spin_dir", spin_dir or 1)
+                meta:set_int("rotational_power", avail_ku or supply_ku or 0)
+                meta:set_int("network_supply_ku", supply_ku or avail_ku or 0)
+                meta:set_int("lit_until", math.floor(core.get_gametime()) + 5)
+            end
+            local timer = core.get_node_timer(pos)
+            if not timer:is_started() then
+                timer:start(CONFIG.TIMER_INTERVAL)
+            end
+            wake_nearby_wheels(pos)
+        end,
+    }
+    -- Register BOTH the idle and active swapped node names with the kinetic network
+    kinetica.register_kinetic_machine(IDLE_NAME, machine_def)
+    kinetica.register_kinetic_machine(ACTIVE_NAME, machine_def)
 end
 
 core.register_lbm({

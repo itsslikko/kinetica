@@ -920,12 +920,31 @@ local function try_drag_matching_items_from_belt(pos, node, dir_mode)
         end
     end
 
-    local cap_hw    = CONFIG.BELT_CAPTURE_HALF_WIDTH
+   local cap_hw    = CONFIG.BELT_CAPTURE_HALF_WIDTH
     local seen_objs = {}
 
+    -- Include the funnel mouth and front cell so fan-pushed items (without a belt) are captured
+    local entity_scan_pts = {}
     for _, bp in ipairs(scan_belts) do
-        local scan_pt = {x = bp.x, y = bp.y + 0.30, z = bp.z}
-        for _, obj in ipairs(core.get_objects_inside_radius(scan_pt, 0.90)) do
+        entity_scan_pts[#entity_scan_pts + 1] = {
+            x = bp.x, y = bp.y + 0.30, z = bp.z,
+            hold_pos = bp, is_belt = true
+        }
+    end
+    if dest_kind ~= "eject" then
+        entity_scan_pts[#entity_scan_pts + 1] = {
+            x = pos.x, y = pos.y, z = pos.z,
+            hold_pos = pos, is_belt = on_belt
+        }
+        entity_scan_pts[#entity_scan_pts + 1] = {
+            x = pos.x + fdir.x * 0.55, y = pos.y, z = pos.z + fdir.z * 0.55,
+            hold_pos = {x = pos.x + fdir.x, y = pos.y, z = pos.z + fdir.z}, is_belt = false
+        }
+    end
+
+    for _, sp in ipairs(entity_scan_pts) do
+        local bp = sp.hold_pos
+        for _, obj in ipairs(core.get_objects_inside_radius(sp, 0.90)) do
             if not seen_objs[obj] then
                 seen_objs[obj] = true
                 local le   = obj:get_luaentity()
@@ -936,9 +955,9 @@ local function try_drag_matching_items_from_belt(pos, node, dir_mode)
                     local immune = (le._kinetica_ejected_by == my_hash) and
                                    (le._kinetica_eject_until and now_sec < le._kinetica_eject_until)
                     if not immune and
-                       math.abs(opos.x - bp.x) <= cap_hw and
-                       math.abs(opos.z - bp.z) <= cap_hw and
-                       math.abs(opos.y - scan_pt.y) <= 0.65 then
+                       math.abs(opos.x - sp.x) <= cap_hw and
+                       math.abs(opos.z - sp.z) <= cap_hw and
+                       math.abs(opos.y - sp.y) <= 0.65 then
                         local st = ItemStack(le.itemstring)
                         if not st:is_empty() then
                             local iname = st:get_name()
@@ -963,11 +982,11 @@ local function try_drag_matching_items_from_belt(pos, node, dir_mode)
                                         record_last_sorted_item(pos, iname, delivered)
                                         spawn_funnel_particles(pos, out_dir, is_smart)
                                         return true
-                                    elseif CONFIG.HOLD_MATCHING_BELT_ITEMS then
+                                    elseif sp.is_belt and CONFIG.HOLD_MATCHING_BELT_ITEMS then
                                         obj:set_velocity({x = 0, y = 0, z = 0})
                                         obj:set_pos({x = bp.x, y = opos.y, z = bp.z})
                                     end
-                                elseif CONFIG.HOLD_MATCHING_BELT_ITEMS then
+                                elseif sp.is_belt and CONFIG.HOLD_MATCHING_BELT_ITEMS then
                                     obj:set_velocity({x = 0, y = 0, z = 0})
                                     obj:set_pos({x = bp.x, y = opos.y, z = bp.z})
                                 end

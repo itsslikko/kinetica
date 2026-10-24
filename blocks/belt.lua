@@ -1,5 +1,8 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+
 local CONFIG = {
     MAX_BELT_LENGTH               = 16,
     BELT_HALF_THICKNESS           = 4 / 16,
@@ -30,6 +33,7 @@ local CONFIG = {
     MOVE_PLAYERS                  = true,
     INVERT_BELT_DIRECTION         = false,
     INVERT_TOP_TEX_SCROLL         = false,
+    TEX_BELT_ITEM                 = "kinetica_belt_item.png",
     TEX_BELT_TOP                  = "kinetica_belt_top.png",
     TEX_BELT_SIDE                 = "kinetica_belt_side.png",
     TEX_SHAFT_OVERLAY             = "kinetica_shaft_connecting_overlay.png",
@@ -39,7 +43,7 @@ local IDLE_NAME = "kinetica:belt"
 local BELT_ITEM = "kinetica:belt_item"
 
 local HT = CONFIG.BELT_HALF_THICKNESS
-local player_selections = {}
+local player_selections   = {}
 local is_dismantling_belt = false
 local belt_relay_depth    = 0
 local belt_demand_guard   = false
@@ -47,6 +51,62 @@ local belt_demand_guard   = false
 local active_conveyor_nodes = {}
 local active_belt_spans     = {}
 local active_belt_items     = {}
+
+local function file_exists(filename)
+    if not filename or filename == "" then return false end
+    local ok, f = pcall(io.open, modpath .. "/textures/" .. filename, "r")
+    if ok and f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+-- Builds a Create-style looped conveyor belt inventory icon!
+local function build_create_belt_item_icon()
+    if file_exists(CONFIG.TEX_BELT_ITEM) then
+        return CONFIG.TEX_BELT_ITEM
+    end
+
+    local b = CONFIG.TEX_BELT_SIDE
+    local function px(hex, alpha, w, h)
+        return "(" .. b .. "\\^[resize\\:16x16\\^[colorize\\:" .. hex .. "\\:" .. tostring(alpha) ..
+               "\\^[sheet\\:" .. tostring(w) .. "x" .. tostring(h) .. "\\:0,0)"
+    end
+
+    local dark_rim    = px("#141619", 245, 1, 1) -- 16x16 base
+    local rubber_band = px("#2c3038", 235, 1, 2) -- 16x8 horizontal band
+    local tread_light = px("#454b56", 225, 1, 4) -- 16x4 inner belt surface
+    local hole_ roller= px("#6e7685", 230, 8, 8) -- 2x2 roller axle hubs
+    local inner_gap   = px("#181a1f", 250, 2, 8) -- 8x2 dark center gap
+    local corner_cut  = px("#000000", 0,   8, 8)
+
+    -- Construct a crisp Create-style rounded horizontal belt loop with two end rollers
+    local top_edge    = "(" .. b .. "\\^[resize\\:12x8\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#1b1e24\\:240)"
+    local mid_body    = "(" .. b .. "\\^[resize\\:14x6\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#323741\\:230)"
+    local tread_strip = "(" .. b .. "\\^[resize\\:12x4\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#4b5260\\:215)"
+    local center_slot = "(" .. b .. "\\^[resize\\:8x2\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#15171c\\:245)"
+    local roller_hub  = "(" .. b .. "\\^[resize\\:2x2\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#8c96a6\\:235)"
+    local tread_tick  = "(" .. b .. "\\^[resize\\:1x1\\^[sheet\\:1x1\\:0,0\\^[colorize\\:#20232a\\:230)"
+
+    return "[combine:16x16" ..
+        ":2,4="  .. top_edge ..
+        ":1,5="  .. mid_body ..
+        ":2,6="  .. tread_strip ..
+        ":4,7="  .. center_slot ..
+        ":2,7="  .. roller_hub ..
+        ":12,7=" .. roller_hub ..
+        ":3,5="  .. tread_tick ..
+        ":5,5="  .. tread_tick ..
+        ":7,5="  .. tread_tick ..
+        ":9,5="  .. tread_tick ..
+        ":11,5=" .. tread_tick ..
+        ":4,10=" .. tread_tick ..
+        ":6,10=" .. tread_tick ..
+        ":8,10=" .. tread_tick ..
+        ":10,10=".. tread_tick ..
+        ":12,10=".. tread_tick
+end
 
 local function is_belt_node(name)
     if not name then return false end
@@ -160,9 +220,6 @@ end
 
 local function get_travel_sign(param2, spin_dir, node_name)
     if not spin_dir or spin_dir == 0 then
-        if node_name and not is_idle_belt_name(node_name) then
-            return is_reverse_belt_name(node_name) and -1 or 1
-        end
         return 0
     end
     local f = get_fwd_dir(param2)
@@ -280,26 +337,26 @@ local function get_belt_span_positions(pos, meta)
     return list
 end
 
+-- Strict power check with `lit_until` expiration so belts NEVER stay on when power stops!
 local function get_effective_belt_power(bpos, meta, bnode)
-    meta  = meta  or core.get_meta(bpos)
-    bnode = bnode or core.get_node(bpos)
+    meta = meta or core.get_meta(bpos)
+    local now = math.floor(core.get_gametime())
 
     local rpm       = meta:get_float("rpm")
     local supply_ku = meta:get_int("network_supply_ku")
     local spin_dir  = meta:get_int("spin_dir")
+    local lit_until = meta:get_int("lit_until")
 
-    if supply_ku > 0 and rpm >= CONFIG.MIN_RPM and spin_dir ~= 0 then
+    if supply_ku > 0 and rpm >= CONFIG.MIN_RPM and spin_dir ~= 0 and now < lit_until then
         return true, rpm, spin_dir, supply_ku
     end
 
     local span_key = get_span_start_key(bpos, meta)
     local sp_state = active_belt_spans[span_key]
-    if sp_state and sp_state.supply_ku > 0 and sp_state.rpm >= CONFIG.MIN_RPM and sp_state.spin_dir ~= 0 then
-        meta:set_float("rpm", sp_state.rpm)
-        meta:set_int("spin_dir", sp_state.spin_dir)
-        meta:set_int("network_supply_ku", sp_state.supply_ku)
-        meta:set_int("rotational_power", sp_state.avail_ku or sp_state.supply_ku)
+    if sp_state and sp_state.supply_ku > 0 and sp_state.rpm >= CONFIG.MIN_RPM and sp_state.spin_dir ~= 0 and now < (sp_state.lit_until or 0) then
         return true, sp_state.rpm, sp_state.spin_dir, sp_state.supply_ku
+    else
+        active_belt_spans[span_key] = nil
     end
 
     if meta:get_int("seg_len") > 0 then
@@ -309,43 +366,20 @@ local function get_effective_belt_power(bpos, meta, bnode)
             local srpm  = smeta:get_float("rpm")
             local ssup  = smeta:get_int("network_supply_ku")
             local sspin = smeta:get_int("spin_dir")
-            if ssup > 0 and srpm >= CONFIG.MIN_RPM and sspin ~= 0 then
+            local slit  = smeta:get_int("lit_until")
+            if ssup > 0 and srpm >= CONFIG.MIN_RPM and sspin ~= 0 and now < slit then
                 active_belt_spans[span_key] = {
                     rpm       = srpm,
                     spin_dir  = sspin,
                     supply_ku = ssup,
                     avail_ku  = smeta:get_int("rotational_power"),
+                    lit_until = slit,
                 }
-                meta:set_float("rpm", srpm)
-                meta:set_int("spin_dir", sspin)
-                meta:set_int("network_supply_ku", ssup)
                 return true, srpm, sspin, ssup
             end
         end
     end
 
-    if bnode and is_belt_node(bnode.name) and not is_idle_belt_name(bnode.name) then
-        local fallback_rpm = CONFIG.MIN_RPM
-        if string.find(bnode.name, "_hyper", 1, true) then
-            fallback_rpm = 256
-        elseif string.find(bnode.name, "_fast", 1, true) then
-            fallback_rpm = 128
-        elseif string.find(bnode.name, "_medium", 1, true) then
-            fallback_rpm = 32
-        elseif string.find(bnode.name, "_slow", 1, true) then
-            fallback_rpm = 16
-        else
-            fallback_rpm = 8
-        end
-        local f = get_fwd_dir(bnode.param2)
-        local natural_dir = (f.x ~= 0) and f.x or (-f.z)
-        local want_sign = is_reverse_belt_name(bnode.name) and -1 or 1
-        if CONFIG.INVERT_BELT_DIRECTION then
-            want_sign = -want_sign
-        end
-        local inferred_spin = (natural_dir >= 0) and want_sign or -want_sign
-        return true, fallback_rpm, inferred_spin, 16
-    end
     return false, 0, 0, 0
 end
 
@@ -1137,6 +1171,22 @@ local function pulley_reaches_real_generator(pulley_pos, pulley_node, own_span_h
     return false
 end
 
+local function span_has_live_generator_input(span)
+    local own_span_hashes = {}
+    for _, bpos in ipairs(span) do
+        own_span_hashes[core.hash_node_position(bpos)] = true
+    end
+    for _, bpos in ipairs(span) do
+        local bnode = core.get_node(bpos)
+        if is_belt_node(bnode.name) and core.get_meta(bpos):get_int("has_shaft") == 1 then
+            if pulley_reaches_real_generator(bpos, bnode, own_span_hashes) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function get_single_node_machine_demand(pos, node, rpm)
     if not node or not node.name or is_belt_node(node.name) then
         return 0
@@ -1316,14 +1366,16 @@ local function set_belt_idle(pos, node, reason_text)
         own_span_hashes[core.hash_node_position(bpos)] = true
     end
 
-    for _, bpos in ipairs(span) do
-        local bnode = core.get_node(bpos)
-        if is_belt_node(bnode.name) and core.get_meta(bpos):get_int("has_shaft") == 1 then
-            if pulley_reaches_real_generator(bpos, bnode, own_span_hashes) then
-                belt_relay_depth = belt_relay_depth + 1
-                notify_pulley_and_axle_neighbors(bpos, bnode)
-                belt_relay_depth = belt_relay_depth - 1
-                return
+    if not reason_text then
+        for _, bpos in ipairs(span) do
+            local bnode = core.get_node(bpos)
+            if is_belt_node(bnode.name) and core.get_meta(bpos):get_int("has_shaft") == 1 then
+                if pulley_reaches_real_generator(bpos, bnode, own_span_hashes) then
+                    belt_relay_depth = belt_relay_depth + 1
+                    notify_pulley_and_axle_neighbors(bpos, bnode)
+                    belt_relay_depth = belt_relay_depth - 1
+                    return
+                end
             end
         end
     end
@@ -1426,7 +1478,7 @@ local function wake_belt(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_k
     end
 
     if not any_real_generator then
-        set_belt_idle(pos, node)
+        set_belt_idle(pos, node, "Mechanical Belt: Idle")
         return
     end
 
@@ -1459,6 +1511,7 @@ local function wake_belt(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_k
         spin_dir  = spin_dir,
         supply_ku = supply_ku,
         avail_ku  = effective_avail_ku,
+        lit_until = now + 2,
     }
 
     local relay_pulleys = {}
@@ -1546,7 +1599,7 @@ local function refresh_entire_belt_span(pos)
             notify_pulley_and_axle_neighbors(rp.pos, core.get_node(rp.pos))
         end
     else
-        set_belt_idle(pos, core.get_node(pos))
+        set_belt_idle(pos, core.get_node(pos), "Mechanical Belt: Idle")
     end
 end
 
@@ -1554,6 +1607,13 @@ local function belt_timer(pos, elapsed)
     local now  = math.floor(core.get_gametime())
     local meta = core.get_meta(pos)
     local node = core.get_node(pos)
+    local span = get_belt_span_positions(pos, meta)
+
+    -- Immediately shut down the belt if its generator connection was severed!
+    if not span_has_live_generator_input(span) then
+        set_belt_idle(pos, node, "Mechanical Belt: Idle")
+        return false
+    end
 
     if kinetica.update_network then
         if now >= meta:get_int("lit_until") then
@@ -1573,7 +1633,7 @@ local function belt_timer(pos, elapsed)
 
     local is_active, rpm, spin_dir, _ = get_effective_belt_power(pos, meta, node)
     if not is_active then
-        set_belt_idle(pos, node)
+        set_belt_idle(pos, node, "Mechanical Belt: Idle")
         return false
     end
 
@@ -1682,37 +1742,35 @@ local SHAPE_GEOM = {
     sideways  = {box = SIDEWAYS_BOX,  col = SIDEWAYS_BOX},
 }
 
+-- =========================================================
+-- FIXED BIDIRECTIONAL BELT TOP & SIDE ANIMATION BUILDERS
+-- =========================================================
 local top_idle            = CONFIG.TEX_BELT_TOP .. "^[sheet:1x4:0,0"
 local side_with_shaft     = "[combine:16x16:0,0=" .. CONFIG.TEX_BELT_SIDE .. ":0,0=" .. CONFIG.TEX_SHAFT_OVERLAY
-local side_with_shaft_r90 = "[combine:16x16:0,0=" .. CONFIG.TEX_BELT_SIDE .. "\\^[transformR90:0,0=" .. CONFIG.TEX_SHAFT_OVERLAY
+local side_with_shaft_r90 = "[combine:16x16:0,0=(" .. CONFIG.TEX_BELT_SIDE .. "\\^[transformR90):0,0=" .. CONFIG.TEX_SHAFT_OVERLAY
 local side_no_shaft       = CONFIG.TEX_BELT_SIDE
 local side_no_shaft_r90   = CONFIG.TEX_BELT_SIDE .. "^[transformR90"
 
-local function make_belt_top_anim(reverse_scroll, anim_length, frame_transform)
-    frame_transform = frame_transform or ""
+local function make_belt_top_anim(reverse_scroll, anim_length, extra_transform)
+    extra_transform = extra_transform or ""
     if CONFIG.INVERT_TOP_TEX_SCROLL then
         reverse_scroll = not reverse_scroll
     end
 
     local top = CONFIG.TEX_BELT_TOP
-    local f0, f1, f2, f3
-    if reverse_scroll then
-        f0, f1, f2, f3 = "0", "3", "2", "1"
+    local final_tex
+
+    if not reverse_scroll then
+        final_tex = top .. extra_transform
     else
-        f0, f1, f2, f3 = "0", "1", "2", "3"
+        final_tex = "[combine:16x64" ..
+            ":0,0=("  .. top .. "\\^[sheet\\:1x4\\:0,0)" ..
+            ":0,16=(" .. top .. "\\^[sheet\\:1x4\\:0,3)" ..
+            ":0,32=(" .. top .. "\\^[sheet\\:1x4\\:0,2)" ..
+            ":0,48=(" .. top .. "\\^[sheet\\:1x4\\:0,1)" ..
+            extra_transform
     end
 
-    local final_tex
-    if frame_transform == "" and not reverse_scroll then
-        final_tex = top
-    else
-        local escaped_tf = string.gsub(frame_transform, "%^", "\\^")
-        final_tex = "[combine:16x64" ..
-            ":0,0="  .. top .. "\\^[sheet\\:1x4\\:0," .. f0 .. escaped_tf ..
-            ":0,16=" .. top .. "\\^[sheet\\:1x4\\:0," .. f1 .. escaped_tf ..
-            ":0,32=" .. top .. "\\^[sheet\\:1x4\\:0," .. f2 .. escaped_tf ..
-            ":0,48=" .. top .. "\\^[sheet\\:1x4\\:0," .. f3 .. escaped_tf
-    end
     return {
         name = final_tex,
         animation = {
@@ -1725,20 +1783,27 @@ local function make_belt_top_anim(reverse_scroll, anim_length, frame_transform)
 end
 
 local function make_belt_side_anim(reverse_spin, anim_length, rotate_bg_90)
-    local bg = rotate_bg_90 and (CONFIG.TEX_BELT_SIDE .. "\\^[transformR90") or CONFIG.TEX_BELT_SIDE
+    local bg = rotate_bg_90 and ("(" .. CONFIG.TEX_BELT_SIDE .. "\\^[transformR90)") or CONFIG.TEX_BELT_SIDE
     local ov = CONFIG.TEX_SHAFT_OVERLAY
 
-    local bg_strip = "[combine:16x64:0,0=" .. bg .. ":0,16=" .. bg .. ":0,32=" .. bg .. ":0,48=" .. bg
-    local ov_strip = ov
+    local tex = "[combine:16x64" ..
+        ":0,0="  .. bg ..
+        ":0,16=" .. bg ..
+        ":0,32=" .. bg ..
+        ":0,48=" .. bg
+
     if reverse_spin then
-        ov_strip = "[combine:16x64" ..
-            ":0,0="  .. ov .. "\\^[sheet\\:1x4\\:0,0" ..
-            ":0,16=" .. ov .. "\\^[sheet\\:1x4\\:0,3" ..
-            ":0,32=" .. ov .. "\\^[sheet\\:1x4\\:0,2" ..
-            ":0,48=" .. ov .. "\\^[sheet\\:1x4\\:0,1"
+        tex = tex ..
+            ":0,0=("  .. ov .. "\\^[sheet\\:1x4\\:0,0)" ..
+            ":0,16=(" .. ov .. "\\^[sheet\\:1x4\\:0,3)" ..
+            ":0,32=(" .. ov .. "\\^[sheet\\:1x4\\:0,2)" ..
+            ":0,48=(" .. ov .. "\\^[sheet\\:1x4\\:0,1)"
+    else
+        tex = tex .. ":0,0=" .. ov
     end
+
     return {
-        name = "(" .. bg_strip .. ")^(" .. ov_strip .. ")",
+        name = tex,
         animation = {
             type     = "vertical_frames",
             aspect_w = 16,
@@ -1763,12 +1828,12 @@ local function build_belt_tiles(shape, is_idle, is_reverse_travel, anim_len, has
             }
         end
 
-        local top_shaft  = has_shaft and make_belt_side_anim(not is_reverse_travel, anim_len, true) or side_no_shaft_r90
-        local bot_shaft  = has_shaft and make_belt_side_anim(is_reverse_travel,     anim_len, true) or side_no_shaft_r90
-        local right_anim = make_belt_top_anim(not is_reverse_travel, anim_len, "^[transformR90")
-        local left_anim  = make_belt_top_anim(is_reverse_travel,     anim_len, "^[transformR90")
-        local back_anim  = make_belt_top_anim(is_reverse_travel,     anim_len, "^[transformR90")
-        local front_anim = make_belt_top_anim(not is_reverse_travel, anim_len, "^[transformR90")
+        local top_shaft  = has_shaft and make_belt_side_anim(is_reverse_travel,     anim_len, true) or side_no_shaft_r90
+        local bot_shaft  = has_shaft and make_belt_side_anim(not is_reverse_travel, anim_len, true) or side_no_shaft_r90
+        local right_anim = make_belt_top_anim(is_reverse_travel,     anim_len, "^[transformR90")
+        local left_anim  = make_belt_top_anim(not is_reverse_travel, anim_len, "^[transformR90")
+        local back_anim  = make_belt_top_anim(not is_reverse_travel, anim_len, "^[transformR90")
+        local front_anim = make_belt_top_anim(is_reverse_travel,     anim_len, "^[transformR90")
 
         return {
             top_shaft,
@@ -1798,13 +1863,15 @@ local function build_belt_tiles(shape, is_idle, is_reverse_travel, anim_len, has
         }
     end
 
+    -- Top (+Y) scrolls in the direction items move; Bottom (-Y) return loop scrolls opposite!
+    -- Right (+X) and Left (-X) shaft overlays spin in opposite local views to match the axle!
     local idle_side_no_shaft = rot_side_bg and side_no_shaft_r90 or side_no_shaft
-    local top_anim   = make_belt_top_anim(not is_reverse_travel, anim_len, "")
-    local bot_anim   = make_belt_top_anim(is_reverse_travel,     anim_len, "")
-    local right_anim = has_shaft and make_belt_side_anim(not is_reverse_travel, anim_len, rot_side_bg) or idle_side_no_shaft
-    local left_anim  = has_shaft and make_belt_side_anim(is_reverse_travel,     anim_len, rot_side_bg) or idle_side_no_shaft
-    local back_anim  = make_belt_top_anim(is_reverse_travel,     anim_len, "")
-    local front_anim = make_belt_top_anim(not is_reverse_travel, anim_len, "")
+    local top_anim   = make_belt_top_anim(is_reverse_travel,     anim_len, "")
+    local bot_anim   = make_belt_top_anim(not is_reverse_travel, anim_len, "")
+    local right_anim = has_shaft and make_belt_side_anim(is_reverse_travel,     anim_len, rot_side_bg) or idle_side_no_shaft
+    local left_anim  = has_shaft and make_belt_side_anim(not is_reverse_travel, anim_len, rot_side_bg) or idle_side_no_shaft
+    local back_anim  = make_belt_top_anim(is_reverse_travel,     anim_len, "^[transformR180")
+    local front_anim = make_belt_top_anim(is_reverse_travel,     anim_len, "")
 
     return {
         top_anim,
@@ -2430,16 +2497,18 @@ local function try_place_belt_span(player, pos1, pos2)
         spawn_belt_particles(info.pos, "connect")
     end
 
-    set_belt_idle(span_nodes[1].pos, core.get_node(span_nodes[1].pos))
+    set_belt_idle(span_nodes[1].pos, core.get_node(span_nodes[1].pos), "Mechanical Belt: Idle")
     refresh_entire_belt_span(span_nodes[1].pos)
 
     return true
 end
 
+local belt_item_icon = build_create_belt_item_icon()
+
 core.register_craftitem(BELT_ITEM, {
     description     = string.format("Mechanical Belt (Min %d RPM)\nRight-click two aligned Shafts to connect them with a conveyor belt.", CONFIG.MIN_RPM),
-    inventory_image = CONFIG.TEX_BELT_SIDE,
-    wield_image     = CONFIG.TEX_BELT_SIDE,
+    inventory_image = belt_item_icon,
+    wield_image     = belt_item_icon,
     on_place = function(itemstack, placer, pointed_thing)
         if not placer or not placer:is_player() then return itemstack end
         if pointed_thing.type ~= "node" then return itemstack end
@@ -2489,7 +2558,7 @@ core.register_craftitem(BELT_ITEM, {
 core.register_craft({
     output = "kinetica:belt_item 2",
     recipe = {
-        {"mcl_ocean:dried_kelp", "mcl_ocean:dried_kelp", "mcl_ocean:dried_kelp"},
+        {"mcl_ocean:dried_kelp", "mcl_ocean:dried_kelp",     "mcl_ocean:dried_kelp"},
         {"mcl_ocean:dried_kelp", "kinetica:andesite_alloy", "mcl_ocean:dried_kelp"},
     },
 })

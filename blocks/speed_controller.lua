@@ -9,6 +9,7 @@ local CONFIG = {
     MIN_INPUT_RPM             = 1,
     FRICTION_FINE_KU          = 1,
     MAX_OUTPUT_RPM            = 1024,
+    ALLOW_CHAINED_CONTROLLERS = false,
     TIMER_INTERVAL            = 0.25,
     ANIM_LEN_INPUT            = 0.40,
     OUTPUT_ANIM_TIERS = {
@@ -271,7 +272,6 @@ end
 
 local active_relay_sc_hash = nil
 local sc_relay_depth       = 0
-local sc_demand_guard      = false
 
 local orig_is_source_node = kinetica.is_source_node
 function kinetica.is_source_node(name)
@@ -285,17 +285,14 @@ function kinetica.is_source_node(name)
 end
 
 local function is_real_generator_node(pos, node)
+    if is_speed_controller(node.name) then
+        return false -- A Speed Controller is a transmission relay, NEVER a primary generator!
+    end
     if (kinetica.is_water_wheel and kinetica.is_water_wheel(node.name)) or
        (kinetica.is_turbine and kinetica.is_turbine(node.name)) or
-       (orig_is_source_node and orig_is_source_node(node.name) and not is_speed_controller(node.name)) then
+       (orig_is_source_node and orig_is_source_node(node.name)) then
         local smeta = core.get_meta(pos)
         if smeta:get_int("source_active") == 1 and smeta:get_int("source_ku") > 0 then
-            return true
-        end
-    end
-    if is_speed_controller(node.name) then
-        local smeta = core.get_meta(pos)
-        if smeta:get_int("sc_out_active") == 1 and smeta:get_int("sc_out_ku") > 0 then
             return true
         end
     end
@@ -336,7 +333,14 @@ local function are_kinetic_nodes_coupled(cur_pos, cur_node, npos, nnode, d, for_
     return false
 end
 
-local function input_reaches_real_generator(sc_pos, sc_node)
+local function input_reaches_real_generator(sc_pos, sc_node, visited_sc)
+    visited_sc = visited_sc or {}
+    local my_hash = core.hash_node_position(sc_pos)
+    if visited_sc[my_hash] then
+        return false
+    end
+    visited_sc[my_hash] = true
+
     local in_dir = get_in_dir(sc_node.param2)
     local in_pos = {
         x = sc_pos.x + in_dir.x,
@@ -350,16 +354,24 @@ local function input_reaches_real_generator(sc_pos, sc_node)
 
     local rev_in = {x = -in_dir.x, y = -in_dir.y, z = -in_dir.z}
     if is_speed_controller(in_node.name) then
+        if not CONFIG.ALLOW_CHAINED_CONTROLLERS then
+            return false
+        end
         local prev_out = get_out_dir(in_node.param2)
         if prev_out.x ~= rev_in.x or prev_out.y ~= rev_in.y or prev_out.z ~= rev_in.z then
             return false
         end
+        local pmeta = core.get_meta(in_pos)
+        if pmeta:get_int("sc_out_active") == 1 and pmeta:get_int("sc_out_ku") > 0 then
+            return input_reaches_real_generator(in_pos, in_node, visited_sc)
+        end
+        return false
     elseif kinetica.has_axle_port and not kinetica.has_axle_port(in_node, rev_in) then
         return false
     end
 
     local visited = {
-        [core.hash_node_position(sc_pos)] = true,
+        [my_hash] = true,
         [core.hash_node_position(in_pos)] = true,
     }
     local queue = {{pos = in_pos, node = in_node}}
@@ -374,7 +386,16 @@ local function input_reaches_real_generator(sc_pos, sc_node)
             return true
         end
 
-        if not is_speed_controller(cur.node.name) then
+        if is_speed_controller(cur.node.name) then
+            if CONFIG.ALLOW_CHAINED_CONTROLLERS then
+                local cmeta = core.get_meta(cur.pos)
+                if cmeta:get_int("sc_out_active") == 1 and cmeta:get_int("sc_out_ku") > 0 then
+                    if input_reaches_real_generator(cur.pos, cur.node, visited_sc) then
+                        return true
+                    end
+                end
+            end
+        else
             for _, d in ipairs(dirs) do
                 local npos = {x = cur.pos.x + d.x, y = cur.pos.y + d.y, z = cur.pos.z + d.z}
                 local nk   = core.hash_node_position(npos)
@@ -448,6 +469,8 @@ local function get_single_node_demand_ku(pos, node, rpm)
     return 0
 end
 
+local get_controller_total_input_demand_ku -- forward declaration
+
 local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, visited)
     if not out_rpm or out_rpm <= 0 then
         return 0
@@ -475,6 +498,9 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
 
     local first_couples = false
     if is_speed_controller(first_node.name) then
+        if not CONFIG.ALLOW_CHAINED_CONTROLLERS then
+            return 0
+        end
         local fin = get_in_dir(first_node.param2)
         first_couples = (fin.x == rev_out.x and fin.y == rev_out.y and fin.z == rev_out.z)
     elseif not kinetica.has_axle_port or kinetica.has_axle_port(first_node, rev_out) then
@@ -495,9 +521,15 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
         local cur = queue[head]
         head = head + 1
 
-        total_ku = total_ku + get_single_node_demand_ku(cur.pos, cur.node, out_rpm)
+        if is_speed_controller(cur.node.name) then
+            if CONFIG.ALLOW_CHAINED_CONTROLLERS then
+                total_ku = total_ku + get_controller_total_input_demand_ku(cur.pos, cur.node, out_rpm, visited)
+            else
+                total_ku = total_ku + CONFIG.FRICTION_FINE_KU
+            end
+        else
+            total_ku = total_ku + get_single_node_demand_ku(cur.pos, cur.node, out_rpm)
 
-        if not is_speed_controller(cur.node.name) then
             for _, d in ipairs(dirs) do
                 local npos = {x = cur.pos.x + d.x, y = cur.pos.y + d.y, z = cur.pos.z + d.z}
                 local nk   = core.hash_node_position(npos)
@@ -516,9 +548,15 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
     return total_ku
 end
 
-local function get_controller_total_input_demand_ku(pos, node, in_rpm)
+get_controller_total_input_demand_ku = function(pos, node, in_rpm, visited)
     local fine = CONFIG.FRICTION_FINE_KU
-    if not pos or sc_demand_guard or not in_rpm or in_rpm < CONFIG.MIN_INPUT_RPM then
+    if not pos or not in_rpm or in_rpm < CONFIG.MIN_INPUT_RPM then
+        return fine
+    end
+
+    visited = visited or {}
+    local my_hash = core.hash_node_position(pos)
+    if visited[my_hash] then
         return fine
     end
 
@@ -531,14 +569,14 @@ local function get_controller_total_input_demand_ku(pos, node, in_rpm)
         return fine
     end
 
-    local out_rpm = math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult)
+    local out_rpm  = math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult)
+    local eff_mult = out_rpm / in_rpm
 
-    sc_demand_guard = true
-    local raw_downstream_ku = compute_output_downstream_demand_ku(pos, node, out_rpm, {})
-    sc_demand_guard = false
+    local sub_visited = table.copy(visited)
+    local raw_downstream_ku = compute_output_downstream_demand_ku(pos, node, out_rpm, sub_visited)
 
     meta:set_int("last_downstream_ku", raw_downstream_ku)
-    local scaled_load = math.ceil(raw_downstream_ku * step.ku_cost_mult)
+    local scaled_load = math.ceil(raw_downstream_ku * eff_mult)
     return fine + scaled_load
 end
 
@@ -564,13 +602,16 @@ local function get_speed_controller_formspec(pos)
     local out_rpm       = (is_powered_in and step.rpm_mult > 0)
         and math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult)
         or  0
+    local eff_mult      = (is_powered_in and in_rpm > 0 and out_rpm > 0) and (out_rpm / in_rpm) or step.ku_cost_mult
 
     local raw_down_ku   = meta:get_int("last_downstream_ku")
-    local total_in_load = CONFIG.FRICTION_FINE_KU + ((step.ku_cost_mult > 0) and math.ceil(raw_down_ku * step.ku_cost_mult) or 0)
+    local total_in_load = CONFIG.FRICTION_FINE_KU + ((eff_mult > 0) and math.ceil(raw_down_ku * eff_mult) or 0)
     local max_out_ku    = 0
-    if is_powered_in and step.ku_cost_mult > 0 then
+    if is_powered_in and eff_mult > 0 then
         local pool_before_sc = in_avail_ku + math.max(0, total_in_load - CONFIG.FRICTION_FINE_KU)
-        max_out_ku = math.max(0, math.floor(pool_before_sc / step.ku_cost_mult))
+        max_out_ku = (eff_mult >= 1.0)
+            and math.max(0, math.floor(pool_before_sc / eff_mult))
+            or  math.max(0, pool_before_sc)
     end
 
     local status_str
@@ -705,11 +746,13 @@ local function update_sc_infotext_and_ui(pos, node)
     local overstressed = (meta:get_int("sc_overstressed") == 1)
 
     if overstressed then
-        local down_ku = meta:get_int("last_downstream_ku")
-        local req_in  = CONFIG.FRICTION_FINE_KU + math.ceil(down_ku * step.ku_cost_mult)
+        local down_ku  = meta:get_int("last_downstream_ku")
+        local out_rpm  = (in_rpm > 0) and math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult) or 0
+        local eff_mult = (in_rpm > 0 and out_rpm > 0) and (out_rpm / in_rpm) or step.ku_cost_mult
+        local req_in   = CONFIG.FRICTION_FINE_KU + math.ceil(down_ku * eff_mult)
         meta:set_string("infotext", string.format(
             "Speed Controller [%s]: OVERSTRESSED! (Needs %d Input KU for %d Downstream KU @ %.3gx)",
-            step.short_label, req_in, down_ku, step.rpm_mult
+            step.short_label, req_in, down_ku, eff_mult
         ))
     elseif rs_clutched then
         meta:set_string("infotext", "Speed Controller: REDSTONE CLUTCH LOCKED (Output: 0 RPM)")
@@ -724,9 +767,10 @@ local function update_sc_infotext_and_ui(pos, node)
             in_rpm, CONFIG.FRICTION_FINE_KU
         ))
     else
-        local out_rpm = math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult)
-        local down_ku = meta:get_int("last_downstream_ku")
-        local in_load = CONFIG.FRICTION_FINE_KU + math.ceil(down_ku * step.ku_cost_mult)
+        local out_rpm  = math.min(CONFIG.MAX_OUTPUT_RPM, in_rpm * step.rpm_mult)
+        local eff_mult = out_rpm / in_rpm
+        local down_ku  = meta:get_int("last_downstream_ku")
+        local in_load  = CONFIG.FRICTION_FINE_KU + math.ceil(down_ku * eff_mult)
         meta:set_string("infotext", string.format(
             "Speed Controller [%s]: In %.0f RPM (-%d KU) -> Out %.1f RPM (Downstream: %d KU | Net Avail: %d/%d KU)",
             step.short_label, in_rpm, in_load, out_rpm, down_ku, in_avail_ku, in_supply_ku
@@ -880,11 +924,14 @@ local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
 
     if out_active then
         out_rpm        = math.min(CONFIG.MAX_OUTPUT_RPM, rpm * step.rpm_mult)
+        local eff_mult = out_rpm / rpm
         local out_spin = rev_out and (-spin_dir) or spin_dir
 
-        local raw_down_ku     = meta:get_int("last_downstream_ku")
-        local extra_out_avail = math.floor(eff_in_avail_ku / step.ku_cost_mult)
-        local out_supply_ku   = math.max(1, raw_down_ku + extra_out_avail)
+        local raw_down_ku = meta:get_int("last_downstream_ku")
+        local extra_out_avail = (eff_mult >= 1.0)
+            and math.floor(eff_in_avail_ku / eff_mult)
+            or  eff_in_avail_ku
+        local out_supply_ku = math.max(1, raw_down_ku + extra_out_avail)
 
         meta:set_int("sc_out_active", 1)
         meta:set_int("sc_out_ku",     out_supply_ku)

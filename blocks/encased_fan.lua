@@ -303,6 +303,12 @@ local function classify_stream_node(node_name, fan_dir)
         return false, nil
     end
 
+    -- Block airflow at funnels so fans cannot brute-force items or bubbles through them
+    if (kinetica.is_funnel and kinetica.is_funnel(node_name)) or
+       core.get_item_group(node_name, "kinetica_funnel") > 0 then
+        return false, nil
+    end
+
     if node_name == DEPOT_NAME or
        core.get_item_group(node_name, "kinetica_depot") > 0 or
        core.get_item_group(node_name, "mechanical_belt") > 0 then
