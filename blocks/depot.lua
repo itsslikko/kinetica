@@ -988,6 +988,12 @@ local function extract_all_from_depot_to_player(pos, inv, player, single_item_on
     return took_any
 end
 
+local function depot_has_any_items(inv)
+    return not inv:is_empty("output")
+        or not inv:is_empty("main")
+        or not inv:is_empty("input")
+end
+
 local function on_depot_rightclick(pos, node, clicker, itemstack, pointed_thing)
     if not clicker or not clicker:is_player() then
         return itemstack
@@ -1001,34 +1007,28 @@ local function on_depot_rightclick(pos, node, clicker, itemstack, pointed_thing)
     local inv      = ensure_depot_inventory(meta)
     local sneaking = clicker:get_player_control().sneak
 
-    if not itemstack or itemstack:is_empty() then
+    -- 1. Check the depot's inventory first: retrieve existing items and clear depot slots
+    if depot_has_any_items(inv) then
+        clicker:set_wielded_item(itemstack)
+
         if extract_all_from_depot_to_player(pos, inv, clicker, sneaking) then
             core.sound_play("default_place_node_hard", {pos = pos, max_hear_distance = 10, gain = 0.4}, true)
             sync_depot_visual_entity(pos, inv)
             update_depot_infotext(meta, inv, nil, 0, false)
             notify_comparators(pos)
         end
+
+        return clicker:get_wielded_item()
+    end
+
+    -- 2. Depot is completely empty: allow inserting the player's held item
+    if not itemstack or itemstack:is_empty() then
         return itemstack
     end
 
-    local held, slot_list = get_active_hold_stack(inv)
-    if held:is_empty() and inv:is_empty("output") then
-        inv:set_stack("main", 1, ItemStack(itemstack))
-        if not core.is_creative_enabled(pname) then
-            itemstack:clear()
-        end
-    elseif not held:is_empty() and held:get_name() == itemstack:get_name() then
-        local leftover = held:add_item(itemstack)
-        inv:set_stack(slot_list, 1, held)
-        if not core.is_creative_enabled(pname) then
-            itemstack = leftover
-        end
-    else
-        extract_all_from_depot_to_player(pos, inv, clicker, false)
-        inv:set_stack("main", 1, ItemStack(itemstack))
-        if not core.is_creative_enabled(pname) then
-            itemstack:clear()
-        end
+    local leftover = inv:add_item("main", ItemStack(itemstack))
+    if not core.is_creative_enabled(pname) then
+        itemstack = leftover
     end
 
     core.sound_play("default_place_node_hard", {pos = pos, max_hear_distance = 10, gain = 0.5}, true)

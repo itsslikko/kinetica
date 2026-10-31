@@ -63,3 +63,6 @@ if reverse_order then
     dofile(modpath .. "/blocks/materials.lua")
     dofile(modpath .. "/blocks/mechanical_press.lua")
     dofile(modpath .. "/blocks/funnel.lua")
+    dofile(modpath .. "/blocks/glue.lua")
+    dofile(modpath .. "/blocks/portable_interface.lua")
+    dofile(modpath .. "/blocks/vault.lua")

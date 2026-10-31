@@ -1,5 +1,22 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+
+-- ============================================================================
+-- SOUND CUSTOMIZATION (Plays ONLY when Steam Generator is actively boiling)
+-- ============================================================================
+local SOUND_CONFIG = {
+    ENABLE_SOUND       = true,
+    SOUND_NAME         = "kinetica_steam_generator", -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_FALLBACK     = "fire_small",               -- Built-in fallback sound if custom .ogg is missing
+    SOUND_GAIN         = 0.45,                       -- Volume (0.0 to 1.0)
+    SOUND_PITCH        = 1.00,                       -- Base playback pitch
+    PITCH_JITTER       = 0.08,                       -- Slight random pitch variation (+/-)
+    SOUND_INTERVAL     = 0.03,                       -- Seconds between sound triggers while active
+    MAX_HEAR_DISTANCE  = 16,                         -- Max distance (blocks) players can hear it
+}
+
 local CONFIG = {
     WATER_BOIL_DURATION           = 20,
     WATER_USE_PER_SEC             = 10,
@@ -42,6 +59,44 @@ local ACTIVE_NAME = "kinetica:steam_generator_active"
 local WATER_BOIL_DURATION = CONFIG.WATER_BOIL_DURATION
 local WATER_USE_PER_SEC   = CONFIG.WATER_USE_PER_SEC
 local STEAM_OUT_PER_SEC   = CONFIG.STEAM_OUT_PER_SEC
+
+local function resolve_sound_name(cfg)
+    if cfg.SOUND_NAME and cfg.SOUND_NAME ~= "" then
+        local f = io.open(modpath .. "/sounds/" .. cfg.SOUND_NAME .. ".ogg", "r")
+        if f then
+            f:close()
+            return cfg.SOUND_NAME
+        end
+    end
+    if cfg.SOUND_FALLBACK and cfg.SOUND_FALLBACK ~= "" then
+        return cfg.SOUND_FALLBACK
+    end
+    return cfg.SOUND_NAME
+end
+
+local RESOLVED_SOUND = resolve_sound_name(SOUND_CONFIG)
+
+local function play_steam_gen_active_sound(pos, meta, dt)
+    if not SOUND_CONFIG.ENABLE_SOUND or not RESOLVED_SOUND or RESOLVED_SOUND == "" then
+        return
+    end
+    local acc = meta:get_float("sfx_timer") + (dt or 1.0)
+    if acc < (SOUND_CONFIG.SOUND_INTERVAL or 1.0) then
+        meta:set_float("sfx_timer", acc)
+        return
+    end
+    meta:set_float("sfx_timer", 0)
+
+    local jitter = (SOUND_CONFIG.PITCH_JITTER or 0) * ((math.random() * 2.0) - 1.0)
+    local pitch  = math.max(0.2, (SOUND_CONFIG.SOUND_PITCH or 1.0) + jitter)
+
+    core.sound_play(RESOLVED_SOUND, {
+        pos               = pos,
+        gain              = SOUND_CONFIG.SOUND_GAIN or 0.45,
+        pitch             = pitch,
+        max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 16,
+    }, true)
+end
 
 function kinetica.is_steam_generator(name)
     return name == IDLE_NAME or name == ACTIVE_NAME
@@ -236,6 +291,7 @@ local function steam_generator_timer(pos, elapsed)
     if not has_any_water then
         meta:set_float("water_boil_time", 0)
         meta:set_int("steam_out_rate", 0)
+        meta:set_float("sfx_timer", 0)
         if node.name == ACTIVE_NAME then
             core.swap_node(pos, {name = IDLE_NAME, param2 = node.param2})
             node.name = IDLE_NAME
@@ -298,9 +354,9 @@ local function steam_generator_timer(pos, elapsed)
             core.swap_node(pos, {name = ACTIVE_NAME, param2 = node.param2})
             node.name = ACTIVE_NAME
         end
-        if math.random(1, 3) == 1 then
-            core.sound_play("fire_small", {pos = pos, max_hear_distance = 16, gain = 0.5}, true)
-        end
+
+        -- Play sound ONLY while actively boiling steam
+        play_steam_gen_active_sound(pos, meta, 1.0)
         spawn_front_firebox_embers(pos, node.param2)
 
         local percent       = (burn_time / math.max(1, max_burn)) * 100
@@ -341,6 +397,7 @@ local function steam_generator_timer(pos, elapsed)
         return true
     else
         meta:set_int("steam_out_rate", 0)
+        meta:set_float("sfx_timer", 0)
         if node.name == ACTIVE_NAME then
             core.swap_node(pos, {name = IDLE_NAME, param2 = node.param2})
             node.name = IDLE_NAME
@@ -374,6 +431,7 @@ local common_Callbacks = {
         meta:set_int("display_water", 0)
         meta:set_int("burn_pct", 0)
         meta:set_int("steam_out_rate", 0)
+        meta:set_float("sfx_timer", 0)
         meta:set_string("infotext", "Steam Generator: Idle (Connect Water Pipe to Sides/Bottom | Steam Out on Top)")
         meta:set_string("formspec", kinetica.get_steam_gen_formspec(0, 0, false))
         meta:set_string("glasses_info", format_steam_gen_glasses_info(pos, core.get_node(pos)))

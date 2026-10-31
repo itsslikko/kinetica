@@ -1,15 +1,27 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+
+-- ============================================================================
+-- SOUND CUSTOMIZATION (Plays ONLY when Mechanical Saw is actively running)
+-- ============================================================================
 local SOUND_CONFIG = {
-    ENABLE_SOUND            = false,
-    SOUND_NAME              = "Drilling_sfx",
-    SOUND_FALLBACK          = "default_dig_cracky",
-    SOUND_GAIN              = 0.25,
-    SOUND_PITCH             = 0.80,
-    SCALE_PITCH_WITH_RPM    = true,
-    SOUND_INTERVAL          = 1.00,
-    MAX_HEAR_DISTANCE       = 12,
-    SOUND_ONLY_WHEN_CUTTING = false,
+    ENABLE_SOUND            = true,
+    SOUND_NAME              = "saw",       -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_FALLBACK          = "default_dig_cracky", -- Built-in fallback sound if custom .ogg is missing
+    SOUND_GAIN              = 0.25,                 -- Volume while spinning (0.0 to 1.0)
+    CUTTING_GAIN_MULT       = 1.35,                 -- Volume multiplier when actively cutting a block
+    SOUND_PITCH             = 0.80,                 -- Base pitch when SCALE_PITCH_WITH_RPM = false
+    SCALE_PITCH_WITH_RPM    = true,                 -- Scale pitch dynamically with shaft RPM
+    MIN_PITCH               = 0.70,                 -- Pitch at MIN_RPM (32 RPM)
+    MAX_PITCH               = 1.40,                 -- Pitch at 512+ RPM
+    SOUND_INTERVAL          = 0.01,                 -- Seconds between sound triggers while active
+    MAX_HEAR_DISTANCE       = 12,                   -- Max distance (blocks) players can hear it
+    SOUND_ONLY_WHEN_CUTTING = false,                -- true = only play when cutting a target; false = play whenever spinning
+    ENABLE_CUT_FINISH_SOUND = true,                 -- Play a chop sound when a block/tree finishes cutting
+    CUT_FINISH_SOUND        = "default_dig_choppy", -- Sound played when target block/tree is harvested
+    CUT_FINISH_GAIN         = 0.80,                 -- Volume of the harvest completion sound
 }
 
 local CONFIG = {
@@ -18,13 +30,14 @@ local CONFIG = {
     KU_PER_RPM                    = 4,
     MIN_KU                        = 16,
     MAX_KU                        = 128,
-    MAX_RPM_CAP                   = 1024,
+    MAX_RPM_CAP                   = 3072,
     ANIM_TIERS = {
         { name = "crawl",  max_rpm = 5,    shaft_len = 0.85, blade_len = 0.55 },
         { name = "slow",   max_rpm = 15,   shaft_len = 0.48, blade_len = 0.34 },
         { name = "medium", max_rpm = 63,   shaft_len = 0.24, blade_len = 0.20 },
         { name = "fast",   max_rpm = 255,  shaft_len = 0.11, blade_len = 0.10 },
         { name = "hyper",  max_rpm = 1024, shaft_len = 0.05, blade_len = 0.05 },
+        { name = "ultra",  max_rpm = 3072, shaft_len = 0.03, blade_len = 0.03 },
     },
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     TICK_INTERVAL                 = 0.20,
@@ -45,6 +58,58 @@ local CONFIG = {
 local IDLE_NAME = "kinetica:mechanical_saw"
 local ACT_CW    = "kinetica:mechanical_saw_active_cw"
 local ACT_CCW   = "kinetica:mechanical_saw_active_ccw"
+
+local function resolve_sound_name(cfg)
+    if cfg.SOUND_NAME and cfg.SOUND_NAME ~= "" then
+        local f = io.open(modpath .. "/sounds/" .. cfg.SOUND_NAME .. ".ogg", "r")
+        if f then
+            f:close()
+            return cfg.SOUND_NAME
+        end
+    end
+    if cfg.SOUND_FALLBACK and cfg.SOUND_FALLBACK ~= "" then
+        return cfg.SOUND_FALLBACK
+    end
+    return cfg.SOUND_NAME
+end
+
+local RESOLVED_SOUND = resolve_sound_name(SOUND_CONFIG)
+
+local function play_saw_active_sound(pos, meta, rpm, is_cutting, dt)
+    if not SOUND_CONFIG.ENABLE_SOUND or not RESOLVED_SOUND or RESOLVED_SOUND == "" then
+        return
+    end
+    if SOUND_CONFIG.SOUND_ONLY_WHEN_CUTTING and not is_cutting then
+        return
+    end
+
+    local acc = meta:get_float("sfx_timer") + (dt or CONFIG.TICK_INTERVAL)
+    if acc < (SOUND_CONFIG.SOUND_INTERVAL or 1.00) then
+        meta:set_float("sfx_timer", acc)
+        return
+    end
+    meta:set_float("sfx_timer", 0)
+
+    local pitch = SOUND_CONFIG.SOUND_PITCH or 0.80
+    if SOUND_CONFIG.SCALE_PITCH_WITH_RPM then
+        local t = math.min(1.0, math.max(0.0, ((rpm or CONFIG.MIN_RPM) - CONFIG.MIN_RPM) / (512 - CONFIG.MIN_RPM)))
+        local min_p = SOUND_CONFIG.MIN_PITCH or 0.70
+        local max_p = SOUND_CONFIG.MAX_PITCH or 1.40
+        pitch = min_p + t * (max_p - min_p)
+    end
+
+    local gain = SOUND_CONFIG.SOUND_GAIN or 0.25
+    if is_cutting and SOUND_CONFIG.CUTTING_GAIN_MULT then
+        gain = math.min(1.0, gain * SOUND_CONFIG.CUTTING_GAIN_MULT)
+    end
+
+    core.sound_play(RESOLVED_SOUND, {
+        pos               = pos,
+        gain              = gain,
+        pitch             = pitch,
+        max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 12,
+    }, true)
+end
 
 local function is_saw_node(name)
     if not name then return false end
@@ -190,7 +255,7 @@ local function place_mechanical_saw(itemstack, placer, pointed_thing)
            under_node.name == "kinetica:piston_head" or
            under_node.name == "kinetica:piston_head_sticky" or
            (kinetica.is_sticky_contraption_frame and kinetica.is_sticky_contraption_frame(under_node.name)) or
-           (kinetica.has_axle_port and kinetica.has_axle_port(under_node, diff)) then
+           (kinetica.has_axle_port and kinetica.has_axle_port(under_node, diff, under_pos)) then
             blade_dir = diff
         end
     end
@@ -213,6 +278,7 @@ local function place_mechanical_saw(itemstack, placer, pointed_thing)
         local meta  = core.get_meta(place_pos)
         local owner = placer and placer.get_player_name and placer:get_player_name() or ""
         meta:set_string("owner", (owner ~= "") and owner or "$unknown")
+        meta:set_float("sfx_timer", 0)
     end
     return placed_stack
 end
@@ -611,6 +677,7 @@ local function set_saw_idle(pos, node, reason_text)
     local meta = core.get_meta(pos)
     meta:set_float("cut_progress", 0)
     meta:set_string("cut_target_name", "")
+    meta:set_float("sfx_timer", 0)
 
     if CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
         meta:set_string("infotext", "")
@@ -687,6 +754,9 @@ local function saw_timer(pos, elapsed)
     local target_node = core.get_node(target_pos)
     local can_cut, cut_cat = classify_saw_target(target_node.name)
 
+    -- Play sound ONLY while the saw is actively spinning (respects SOUND_ONLY_WHEN_CUTTING)
+    play_saw_active_sound(pos, meta, rpm, can_cut, CONFIG.TICK_INTERVAL)
+
     if can_cut then
         local prev_target = meta:get_string("cut_target_name")
         local progress    = meta:get_float("cut_progress")
@@ -725,7 +795,13 @@ local function saw_timer(pos, elapsed)
                 harvest_and_drop_node(target_pos, target_pos, owner)
             end
 
-            core.sound_play("default_dig_choppy", {pos = pos, max_hear_distance = 16, gain = 0.8}, true)
+            if SOUND_CONFIG.ENABLE_CUT_FINISH_SOUND and SOUND_CONFIG.CUT_FINISH_SOUND ~= "" then
+                core.sound_play(SOUND_CONFIG.CUT_FINISH_SOUND, {
+                    pos               = pos,
+                    max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 16,
+                    gain              = SOUND_CONFIG.CUT_FINISH_GAIN or 0.8,
+                }, true)
+            end
         else
             meta:set_float("cut_progress", progress)
         end
@@ -828,6 +904,8 @@ local function register_saw_variant(node_name, back_tile, saw_tile_5, saw_tile_6
         sounds = mcl_sounds.node_sound_stone_defaults(),
 
         on_construct = is_base and function(pos)
+            local meta = core.get_meta(pos)
+            meta:set_float("sfx_timer", 0)
             set_saw_idle(pos, core.get_node(pos))
             if kinetica.schedule_network_update then
                 kinetica.schedule_network_update(pos)

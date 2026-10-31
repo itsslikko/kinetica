@@ -1,15 +1,23 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+
+-- ============================================================================
+-- SOUND CUSTOMIZATION (Plays ONLY when Water Pump is actively running)
+-- ============================================================================
 local SOUND_CONFIG = {
-    ENABLE_SOUND            = false,
-    SOUND_NAME              = "water_pump_sfx",
-    SOUND_FALLBACK          = "default_water_footstep",
-    SOUND_GAIN              = 0.25,
-    SOUND_PITCH             = 0.85,
-    SCALE_PITCH_WITH_RPM    = true,
-    SOUND_INTERVAL          = 1.00,
-    MAX_HEAR_DISTANCE       = 12,
-    SOUND_ONLY_WHEN_PUMPING = false,
+    ENABLE_SOUND            = true,
+    SOUND_NAME              = "water_pump",         -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_FALLBACK          = "default_water_footstep", -- Built-in fallback sound if custom .ogg is missing
+    SOUND_GAIN              = 0.25,                     -- Volume (0.0 to 1.0)
+    SOUND_PITCH             = 0.85,                     -- Base pitch when SCALE_PITCH_WITH_RPM = false
+    SCALE_PITCH_WITH_RPM    = true,                     -- Scale pitch dynamically with shaft RPM
+    MIN_PITCH               = 0.75,                     -- Pitch at MIN_PUMP_RPM (4 RPM)
+    MAX_PITCH               = 1.35,                     -- Pitch at 512+ RPM
+    SOUND_INTERVAL          = 0.0,                     -- Seconds between sound triggers while active
+    MAX_HEAR_DISTANCE       = 12,                       -- Max distance (blocks) players can hear it
+    SOUND_ONLY_WHEN_PUMPING = false,                    -- true = only play when water is below; false = play whenever spinning
 }
 
 local CONFIG = {
@@ -17,7 +25,7 @@ local CONFIG = {
     MAX_PUMP_CHAIN                = kinetica.MAX_PUMP_CHAIN or 5,
     MIN_WATER_PER_SEC             = 20,
     MAX_WATER_PER_SEC             = 100,
-    MAX_RPM_CAP                   = 1024,
+    MAX_RPM_CAP                   = 3072,
     DIRECT_FEED_STEAM_GENERATOR   = true,
     ANIM_TIERS = {
         { name = "crawl",  max_rpm = 5,    length = 0.85 },
@@ -25,6 +33,7 @@ local CONFIG = {
         { name = "medium", max_rpm = 63,   length = 0.24 },
         { name = "fast",   max_rpm = 255,  length = 0.11 },
         { name = "hyper",  max_rpm = 1024, length = 0.05 },
+        { name = "ultra",  max_rpm = 3072, length = 0.03 },
     },
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     TEX_TOP                       = "kinetica_pump_top.png",
@@ -40,6 +49,53 @@ local ACTIVE_CCW_NAME = "kinetica:water_pump_active_ccw"
 
 local MIN_PUMP_RPM   = CONFIG.MIN_PUMP_RPM
 local MAX_PUMP_CHAIN = CONFIG.MAX_PUMP_CHAIN
+
+local function resolve_sound_name(cfg)
+    if cfg.SOUND_NAME and cfg.SOUND_NAME ~= "" then
+        local f = io.open(modpath .. "/sounds/" .. cfg.SOUND_NAME .. ".ogg", "r")
+        if f then
+            f:close()
+            return cfg.SOUND_NAME
+        end
+    end
+    if cfg.SOUND_FALLBACK and cfg.SOUND_FALLBACK ~= "" then
+        return cfg.SOUND_FALLBACK
+    end
+    return cfg.SOUND_NAME
+end
+
+local RESOLVED_SOUND = resolve_sound_name(SOUND_CONFIG)
+
+local function play_pump_active_sound(pos, meta, rpm, found_water, dt)
+    if not SOUND_CONFIG.ENABLE_SOUND or not RESOLVED_SOUND or RESOLVED_SOUND == "" then
+        return
+    end
+    if SOUND_CONFIG.SOUND_ONLY_WHEN_PUMPING and not found_water then
+        return
+    end
+
+    local acc = meta:get_float("sfx_timer") + (dt or 1.0)
+    if acc < (SOUND_CONFIG.SOUND_INTERVAL or 1.0) then
+        meta:set_float("sfx_timer", acc)
+        return
+    end
+    meta:set_float("sfx_timer", 0)
+
+    local pitch = SOUND_CONFIG.SOUND_PITCH or 0.85
+    if SOUND_CONFIG.SCALE_PITCH_WITH_RPM then
+        local t = math.min(1.0, math.max(0.0, ((rpm or MIN_PUMP_RPM) - MIN_PUMP_RPM) / (512 - MIN_PUMP_RPM)))
+        local min_p = SOUND_CONFIG.MIN_PITCH or 0.75
+        local max_p = SOUND_CONFIG.MAX_PITCH or 1.35
+        pitch = min_p + t * (max_p - min_p)
+    end
+
+    core.sound_play(RESOLVED_SOUND, {
+        pos               = pos,
+        gain              = SOUND_CONFIG.SOUND_GAIN or 0.25,
+        pitch             = pitch,
+        max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 12,
+    }, true)
+end
 
 local function is_water_pump_node(name)
     if not name then return false end
@@ -187,6 +243,7 @@ local function pump_timer(pos, elapsed)
         if chain_size > MAX_PUMP_CHAIN then
             meta:set_int("pump_overloaded", 1)
             meta:set_int("pump_rate", 0)
+            meta:set_float("sfx_timer", 0)
             if not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
                 meta:set_string("infotext", string.format("Water Pump: OVERLOADED (Max %d Pumps in a Chain!)", MAX_PUMP_CHAIN))
             end
@@ -201,6 +258,7 @@ local function pump_timer(pos, elapsed)
 
         if rpm < MIN_PUMP_RPM then
             meta:set_int("pump_rate", 0)
+            meta:set_float("sfx_timer", 0)
             if not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
                 meta:set_string("infotext", string.format(
                     "Water Pump: Too Slow (%.0f RPM / Min %d RPM Required!)",
@@ -222,6 +280,9 @@ local function pump_timer(pos, elapsed)
             core.swap_node(pos, {name = target_node, param2 = node.param2})
             node.name = target_node
         end
+
+        -- Play sound ONLY when the pump is actively running
+        play_pump_active_sound(pos, meta, rpm, found_water, 1.0)
 
         local top_pos     = {x = pos.x, y = pos.y + 1, z = pos.z}
         local pump_amount = calc_pump_water_rate(rpm)
@@ -287,6 +348,7 @@ local function pump_timer(pos, elapsed)
     else
         meta:set_int("pump_rate", 0)
         meta:set_int("pump_overloaded", 0)
+        meta:set_float("sfx_timer", 0)
         if kinetica.set_node_idle then
             kinetica.set_node_idle(pos, node)
         elseif node.name ~= IDLE_NAME then
@@ -376,6 +438,7 @@ local function register_pump_variant(node_name, right_tile, left_tile, back_tile
             meta:set_int("pump_rate", 0)
             meta:set_int("has_water_below", 0)
             meta:set_int("chain_size", 1)
+            meta:set_float("sfx_timer", 0)
             if kinetica.set_node_idle then
                 kinetica.set_node_idle(pos, core.get_node(pos))
             end

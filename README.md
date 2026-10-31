@@ -23,29 +23,22 @@ Harness the power of water and steam to generate Rotational Power (KU), transmit
 
 **Tier 4: Smart Logistics (Gold/Brass)**
 *   **Mechanical Belts & Depots:** Transport items smoothly across your factory.
-*   **Chutes:** Drop items vertically into containers.
-*   **Funnels & Smart Funnels:** The ultimate sorting tools. Attach Smart Funnels to the sides of passing belts to drag specific items off the line using 3-slot ghost filters, category matching, and exact-count batching!
+*   **Chutes & Funnels:** Drop items vertically into containers, or use Smart Funnels to drag specific items off moving belts using 3-slot ghost filters, category matching, and exact-count batching.
+*   **Item Vaults:** Large-capacity, multi-block storage that can be safely glued to moving piston contraptions.
+*   **Portable Interfaces:** Bridge static automation lines with moving contraptions (and Steampunk Blimps) to automatically refuel, repair, and transfer fluids and cargo on the fly.
 
 ## The Engineer's Glasses
 Never guess why a machine stopped working. Craft the **Kinetic Engineer's Glasses** (Glass + Gold Ingot) and wear them in your helmet slot. Looking at any kinetic machine will display a live left-side HUD showing:
 *   Current RPM and network stress.
 *   Available vs. Consumed Kinetic Units (KU).
 *   Live item filtering, batch sizes, and flow direction for Funnels.
-
-## Building Infinite Factories
-Kinetica is designed for emergent automation. By chaining machines together, you can create infinite resource loops:
-*   **Infinite Iron:** Drill Cobblestone, Crush into Gravel, Wash with Fan (Yields Iron Nuggets), Smart Funnel sorts Nuggets, Mechanical Press compacts 9 Nuggets into 1 Iron Ingot.
+*   Contents and capacities of multi-block Item Vaults.
 
 ## Dependencies
 This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relies on standard APIs (`mcl_core`, `mcl_sounds`, `mcl_formspec`, `mcl_experience`, `mcl_pistons`, `mcl_redstone`).
+*   **Optional Integration:** `steampunk_blimp` (Auto-refueling and cargo transfer via Portable Interfaces).
 
 ---
-
-## Media Credits & Licenses
-
-**3D Models:**
-*   `kinetica_water_wheel_big.obj`: Original work created entirely by Slikko. 
-*   **License:** CC BY-SA 4.0
 
 ## Media Credits & Licenses
 
@@ -53,8 +46,8 @@ This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relie
 *   `kinetica_water_wheel_big.obj`: Original 3D model created by **Slikko** (CC BY-SA 4.0).
 
 **Textures:**
-*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), speed controller, gearbox, chain drive, encased fan front, chute, feeder, water pump, steam turbine, belts, shafts, and engineer's glasses were hand-painted by **Slikko**.
-*   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, `kinetica_water_wheel_core.png`, and the steam generator textures (`kinetica_steam_maker_down.png`, `kinetica_steam_maker_top.png`, `kinetica_steam_maker_side.png`, `kinetica_steam_maker_aniamtion.png`, `kinetica_steam_maker_front_off.png`) are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors). The piston, saw, and drill reference built-in Mineclonia textures directly.
+*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), speed controller, gearbox, chain drive, encased fan, chute, feeder, water pump, steam turbine, belts, shafts, glue, vaults, portable interfaces, and engineer's glasses were hand-painted by **Slikko**.
+*   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, `kinetica_water_wheel_core.png`, and the steam generator textures are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors).
 
 **Audio:**
-*   This mod does not bundle any custom sound files.
+*   **Original Audio (by Slikko — CC BY-SA 4.0):** Drills, crushers, saws, fans, steam generators, water pumps, and turbines.

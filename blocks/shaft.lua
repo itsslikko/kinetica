@@ -7,13 +7,14 @@ local CONFIG = {
     CHAIN_DRIVE_FINE_KU           = 1,
     MAX_NETWORK_NODES             = 512,
     WATCHDOG_SECONDS              = 2.0,
-    MAX_RPM_CAP                   = 1024,
+    MAX_RPM_CAP                   = 3072,
     ANIM_TIERS = {
         { name = "crawl",  max_rpm = 5,    length = 0.85 },
         { name = "slow",   max_rpm = 15,   length = 0.48 },
         { name = "medium", max_rpm = 63,   length = 0.24 },
         { name = "fast",   max_rpm = 255,  length = 0.11 },
         { name = "hyper",  max_rpm = 1024, length = 0.05 },
+        { name = "ultra",  max_rpm = 3072, length = 0.03 },
     },
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     PUMP_MIN_RPM                  = 4,
@@ -57,10 +58,38 @@ kinetica.PUMP_MIN_RPM        = PUMP_MIN_RPM
 kinetica.MAX_PUMP_CHAIN      = MAX_PUMP_CHAIN
 kinetica.PISTON_MIN_RPM      = PISTON_MIN_RPM
 kinetica.MAX_PISTON_POLES    = MAX_PISTON_POLES
+kinetica.MAX_NETWORK_NODES   = MAX_NETWORK_NODES
+kinetica.MAX_RPM_CAP         = CONFIG.MAX_RPM_CAP
 
 local IDLE_SHAFT = "kinetica:shaft"
 local ACT_CW     = "kinetica:shaft_active_cw"
 local ACT_CCW    = "kinetica:shaft_active_ccw"
+
+local function format_int(n)
+    local num = math.floor((tonumber(n) or 0) + 0.5)
+    local sign = ""
+    if num < 0 then
+        sign = "-"
+        num = -num
+    end
+    local s = tostring(num)
+    while true do
+        local k
+        s, k = string.gsub(s, "^(%d+)(%d%d%d)", "%1,%2")
+        if k == 0 then break end
+    end
+    return sign .. s
+end
+kinetica.format_int = format_int
+
+local function format_rpm(rpm)
+    local r = tonumber(rpm) or 0
+    if math.abs(r - math.floor(r + 0.5)) < 0.05 then
+        return format_int(math.floor(r + 0.5))
+    end
+    return string.format("%.1f", r)
+end
+kinetica.format_rpm = format_rpm
 
 local function get_anim_tier_name(rpm)
     local clamped = math.min(CONFIG.MAX_RPM_CAP, math.max(0, rpm or 0))
@@ -114,12 +143,17 @@ end
 
 function kinetica.get_machine_def(node_name)
     if not node_name then return nil end
+    local best_def = nil
+    local best_len = -1
     for prefix, def in pairs(kinetica.registered_machines) do
         if node_name == prefix or string.sub(node_name, 1, #prefix + 1) == (prefix .. "_") then
-            return def
+            if #prefix > best_len then
+                best_len = #prefix
+                best_def = def
+            end
         end
     end
-    return nil
+    return best_def
 end
 
 function kinetica.is_registered_machine(node_name)
@@ -208,7 +242,7 @@ function kinetica.is_turbine(name)
            string.sub(name, 1, 17) == "kinetica:turbine_"
 end
 
-function kinetica.is_source_node(name)
+function kinetica.is_source_node(name, pos)
     return kinetica.is_water_wheel(name) or kinetica.is_turbine(name)
 end
 
@@ -287,8 +321,11 @@ local function format_shaft_glasses_info(pos, node)
         "=== KINETIC GLASSES TELEMETRY ===",
         string.format("Block:  Square Tube Shaft [%d/%d]", is_active and sdist or 0, MAX_SHAFT_RUN),
         "State:  " .. (is_active and "ACTIVE" or "IDLE"),
-        string.format("Speed:  %.1f RPM", is_active and rpm or 0),
-        string.format("Power:  %d / %d KU Avail (%d KU Used)", is_active and avail_ku or 0, supply_ku, is_active and used_ku or 0),
+        string.format("Speed:  %s RPM", format_rpm(is_active and rpm or 0)),
+        string.format("Power:  %s / %s KU Avail (%s KU Used)",
+            format_int(is_active and avail_ku or 0),
+            format_int(supply_ku),
+            format_int(is_active and used_ku or 0)),
         "Axis:   " .. axis_lbl,
     }, "\n")
 end
@@ -298,10 +335,18 @@ kinetica._glasses_formatters[IDLE_SHAFT] = format_shaft_glasses_info
 if not kinetica.get_glasses_info then
     function kinetica.get_glasses_info(pos, node)
         node = node or core.get_node(pos)
+        local best_fn = nil
+        local best_len = -1
         for prefix, fn in pairs(kinetica._glasses_formatters) do
             if node.name == prefix or string.sub(node.name or "", 1, #prefix + 1) == (prefix .. "_") then
-                return fn(pos, node)
+                if #prefix > best_len then
+                    best_len = #prefix
+                    best_fn = fn
+                end
             end
+        end
+        if best_fn then
+            return best_fn(pos, node)
         end
         return core.get_meta(pos):get_string("glasses_info")
     end
@@ -356,7 +401,7 @@ function kinetica.get_pump_axle_dirs(param2)
     return {right_dir, left_dir}
 end
 
-function kinetica.has_axle_port(node, d)
+function kinetica.has_axle_port(node, d, pos)
     local name = node.name
     if kinetica.is_shaft(name) then
         return kinetica.is_Aligned_With_Dir(node.param2, d)
@@ -376,7 +421,7 @@ function kinetica.has_axle_port(node, d)
                (math.abs(d.z) == math.abs(axles[1].z))
     elseif kinetica.is_mechanical_piston(name) then
         if kinetica.piston_has_axle_port then
-            return kinetica.piston_has_axle_port(node, d)
+            return kinetica.piston_has_axle_port(node, d, pos)
         end
         local back_dir = core.facedir_to_dir(node.param2 or 0) or {x = 0, y = 0, z = 1}
         return (d.x * back_dir.x + d.y * back_dir.y + d.z * back_dir.z) == 0
@@ -389,7 +434,7 @@ function kinetica.has_axle_port(node, d)
         local mdef = kinetica.get_machine_def(name)
         if mdef then
             if mdef.has_axle_port then
-                return mdef.has_axle_port(node, d)
+                return mdef.has_axle_port(node, d, pos)
             end
             local back_dir = core.facedir_to_dir(node.param2 or 0) or {x = 0, y = 0, z = 1}
             return (d.x == back_dir.x and d.y == back_dir.y and d.z == back_dir.z)
@@ -471,7 +516,7 @@ local function are_contraption_coupled(nodeA, nodeB, dir)
     return false
 end
 
-local function are_nodes_coupled(nodeA, nodeB, dir)
+local function are_nodes_coupled(nodeA, nodeB, dir, posA, posB)
     if kinetica.is_chain_drive(nodeA.name) and kinetica.is_chain_drive(nodeB.name) then
         local axA = abs_axis(nodeA.param2)
         local axB = abs_axis(nodeB.param2)
@@ -481,7 +526,7 @@ local function are_nodes_coupled(nodeA, nodeB, dir)
     end
 
     local rev = {x = -dir.x, y = -dir.y, z = -dir.z}
-    if kinetica.has_axle_port(nodeA, dir) and kinetica.has_axle_port(nodeB, rev) then
+    if kinetica.has_axle_port(nodeA, dir, posA) and kinetica.has_axle_port(nodeB, rev, posB) then
         return true, "axle"
     end
 
@@ -491,6 +536,7 @@ local function are_nodes_coupled(nodeA, nodeB, dir)
 
     return false, nil
 end
+kinetica.are_nodes_coupled = are_nodes_coupled
 
 local function gearbox_port_alpha(node_name, p)
     local is_vert = string.find(node_name, "vertical") ~= nil
@@ -696,15 +742,23 @@ local function read_source_state(pos, node)
     return active and (ku > 0) and (rpm > 0), ku, rpm, spin
 end
 
-local solver_running = false
+local solver_depth = 0
+local MAX_SOLVER_DEPTH = 8
+
+local function run_post_solve_actions(actions)
+    for i = 1, #actions do
+        actions[i]()
+    end
+end
 
 function kinetica.update_network(start_pos)
-    if solver_running or not start_pos then return end
+    if solver_depth >= MAX_SOLVER_DEPTH or not start_pos then return end
     local start_node = core.get_node(start_pos)
     if not kinetica.is_kinetic_node(start_node.name) then return end
 
-    solver_running = true
+    solver_depth = solver_depth + 1
     local now = math.floor(core.get_gametime())
+    local post_actions = {}
 
     local start_key = core.hash_node_position(start_pos)
     local nodes_by_key = {}
@@ -733,7 +787,7 @@ function kinetica.update_network(start_pos)
             local nnode = core.get_node(npos)
 
             if kinetica.is_kinetic_node(nnode.name) then
-                local coupled, link_type = are_nodes_coupled(cur.node, nnode, d)
+                local coupled, link_type = are_nodes_coupled(cur.node, nnode, d, cur.pos, npos)
                 if coupled then
                     local next_run = kinetica.is_shaft(nnode.name) and (cur.shaft_run + 1) or 0
                     if next_run <= MAX_SHAFT_RUN then
@@ -771,7 +825,7 @@ function kinetica.update_network(start_pos)
         if kinetica.is_water_wheel(info.node.name) then
             water_wheel_count = water_wheel_count + 1
         end
-        if kinetica.is_source_node(info.node.name) then
+        if kinetica.is_source_node(info.node.name, info.pos) then
             local is_act, ku, rpm, spin = read_source_state(info.pos, info.node)
             if is_act then
                 table.insert(active_sources, {
@@ -794,8 +848,12 @@ function kinetica.update_network(start_pos)
         )
         for _, k in ipairs(queue) do
             local info = nodes_by_key[k]
-            if not kinetica.is_source_node(info.node.name) then
-                kinetica.set_node_idle(info.pos, info.node, limit_msg)
+            if not kinetica.is_source_node(info.node.name, info.pos) then
+                post_actions[#post_actions + 1] = function()
+                    kinetica.set_node_idle(info.pos, info.node, limit_msg)
+                    local m = core.get_meta(info.pos)
+                    m:set_int("network_overstressed", 1)
+                end
             else
                 local smeta = core.get_meta(info.pos)
                 smeta:set_int("network_overstressed", 1)
@@ -805,15 +863,18 @@ function kinetica.update_network(start_pos)
                 smeta:set_string("infotext", limit_msg)
             end
         end
-        solver_running = false
+        solver_depth = solver_depth - 1
+        run_post_solve_actions(post_actions)
         return
     end
 
     if #active_sources == 0 then
         for _, k in ipairs(queue) do
             local info = nodes_by_key[k]
-            if not kinetica.is_source_node(info.node.name) then
-                kinetica.set_node_idle(info.pos, info.node)
+            if not kinetica.is_source_node(info.node.name, info.pos) then
+                post_actions[#post_actions + 1] = function()
+                    kinetica.set_node_idle(info.pos, info.node)
+                end
             else
                 local smeta = core.get_meta(info.pos)
                 smeta:set_int("network_overstressed", 0)
@@ -822,13 +883,14 @@ function kinetica.update_network(start_pos)
                 smeta:set_int("rotational_power", 0)
             end
         end
-        solver_running = false
+        solver_depth = solver_depth - 1
+        run_post_solve_actions(post_actions)
         return
     end
 
     if self_loop_conflict then
         local break_pos = find_conflict_shaft(self_loop_conflict.k1, self_loop_conflict.k2, parent, nodes_by_key)
-        solver_running = false
+        solver_depth = solver_depth - 1
         if break_pos and kinetica.break_conflicting_shaft(break_pos) then
             for _, src in ipairs(active_sources) do
                 kinetica.update_network(src.pos)
@@ -850,17 +912,17 @@ function kinetica.update_network(start_pos)
 
         if rpm_mismatch or spin_mismatch then
             local break_pos = find_conflict_shaft(ref.key, s.key, parent, nodes_by_key)
-            solver_running = false
+            solver_depth = solver_depth - 1
             if break_pos and kinetica.break_conflicting_shaft(break_pos) then
                 kinetica.update_network(ref.pos)
                 kinetica.update_network(s.pos)
             else
                 local reason = rpm_mismatch
-                    and string.format("JAMMED: RPM Mismatch (%.0f RPM vs %.0f RPM)!", shared_rpm, s.rpm)
+                    and string.format("JAMMED: RPM Mismatch (%s RPM vs %s RPM)!", format_rpm(shared_rpm), format_rpm(s.rpm))
                     or "JAMMED: Conflicting Rotation Directions!"
                 for _, k in ipairs(queue) do
                     local info = nodes_by_key[k]
-                    if not kinetica.is_source_node(info.node.name) then
+                    if not kinetica.is_source_node(info.node.name, info.pos) then
                         kinetica.set_node_idle(info.pos, info.node, reason)
                     else
                         local smeta = core.get_meta(info.pos)
@@ -885,20 +947,22 @@ function kinetica.update_network(start_pos)
     for _, k in ipairs(queue) do
         local info  = nodes_by_key[k]
         local nname = info.node.name
-        if kinetica.is_gearbox(nname) then
-            gearbox_count = gearbox_count + 1
-        elseif kinetica.is_chain_drive(nname) then
-            chain_drive_count = chain_drive_count + 1
-        elseif kinetica.is_water_pump(nname) then
-            pump_count = pump_count + 1
-        elseif kinetica.is_mechanical_piston(nname) then
-            piston_count = piston_count + 1
-        else
-            local mdef = kinetica.get_machine_def(nname)
-            if mdef then
-                local m_ku = mdef.get_demand_ku and mdef.get_demand_ku(shared_rpm, info.pos, info.node) or 16
-                info.machine_demand_ku = m_ku
-                custom_machine_ku = custom_machine_ku + m_ku
+        if not kinetica.is_source_node(nname, info.pos) then
+            if kinetica.is_gearbox(nname) then
+                gearbox_count = gearbox_count + 1
+            elseif kinetica.is_chain_drive(nname) then
+                chain_drive_count = chain_drive_count + 1
+            elseif kinetica.is_water_pump(nname) then
+                pump_count = pump_count + 1
+            elseif kinetica.is_mechanical_piston(nname) then
+                piston_count = piston_count + 1
+            else
+                local mdef = kinetica.get_machine_def(nname)
+                if mdef then
+                    local m_ku = mdef.get_demand_ku and mdef.get_demand_ku(shared_rpm, info.pos, info.node, total_supply_ku) or 16
+                    info.machine_demand_ku = m_ku
+                    custom_machine_ku = custom_machine_ku + m_ku
+                end
             end
         end
     end
@@ -912,13 +976,32 @@ function kinetica.update_network(start_pos)
 
     if total_supply_ku < total_demand_ku or (total_fines > 0 and after_fines_ku <= 0) then
         local over_msg = string.format(
-            "OVERSTRESSED! (Network Demand: %d KU > Supply: %d KU @ %.0f RPM)",
-            total_demand_ku, total_supply_ku, shared_rpm
+            "OVERSTRESSED! (Network Demand: %s KU > Supply: %s KU @ %s RPM)",
+            format_int(total_demand_ku), format_int(total_supply_ku), format_rpm(shared_rpm)
         )
         for _, k in ipairs(queue) do
             local info = nodes_by_key[k]
-            if not kinetica.is_source_node(info.node.name) then
-                kinetica.set_node_idle(info.pos, info.node, over_msg)
+            local nspin = (base_spin * info.pol >= 0) and 1 or -1
+            if not kinetica.is_source_node(info.node.name, info.pos) then
+                local mdef = kinetica.get_machine_def(info.node.name)
+                post_actions[#post_actions + 1] = function()
+                    kinetica.set_node_idle(info.pos, info.node, over_msg)
+                    local m = core.get_meta(info.pos)
+                    m:set_int("network_overstressed", 1)
+                    m:set_int("network_supply_ku", total_supply_ku)
+                    m:set_int("network_used_ku", total_demand_ku)
+                    if mdef and mdef.on_overstress then
+                        mdef.on_overstress(
+                            info.pos,
+                            core.get_node(info.pos),
+                            shared_rpm,
+                            nspin,
+                            total_supply_ku,
+                            total_demand_ku,
+                            info.machine_demand_ku or 0
+                        )
+                    end
+                end
             else
                 local smeta = core.get_meta(info.pos)
                 smeta:set_int("network_overstressed", 1)
@@ -928,7 +1011,8 @@ function kinetica.update_network(start_pos)
                 smeta:set_string("infotext", over_msg)
             end
         end
-        solver_running = false
+        solver_depth = solver_depth - 1
+        run_post_solve_actions(post_actions)
         return
     end
 
@@ -954,7 +1038,7 @@ function kinetica.update_network(start_pos)
             local nkey = core.hash_node_position(npos)
             local ninfo = nodes_by_key[nkey]
             if ninfo and dist_map[nkey] == nil then
-                local coupled, _ = are_nodes_coupled(cinfo.node, ninfo.node, d)
+                local coupled, _ = are_nodes_coupled(cinfo.node, ninfo.node, d, cinfo.pos, ninfo.pos)
                 if coupled then
                     dist_map[nkey] = cdist + 1
                     dqueue[#dqueue + 1] = nkey
@@ -1001,8 +1085,10 @@ function kinetica.update_network(start_pos)
                     meta:set_string("infotext", "")
                 else
                     meta:set_string("infotext", string.format(
-                        "Square Tube Shaft [%d/%d]: ACTIVE (%d KU avail / %d KU total | %d KU used | %.0f RPM)",
-                        sdist, MAX_SHAFT_RUN, shared_avail_ku, total_supply_ku, total_demand_ku, shared_rpm
+                        "Square Tube Shaft [%d/%d]: ACTIVE (%s KU avail / %s KU total | %s KU used | %s RPM)",
+                        sdist, MAX_SHAFT_RUN,
+                        format_int(shared_avail_ku), format_int(total_supply_ku),
+                        format_int(total_demand_ku), format_rpm(shared_rpm)
                     ))
                 end
                 meta:set_string("glasses_info", format_shaft_glasses_info(pos, core.get_node(pos)))
@@ -1019,9 +1105,10 @@ function kinetica.update_network(start_pos)
                     core.swap_node(pos, {name = target, param2 = node.param2})
                 end
                 meta:set_string("infotext", string.format(
-                    "%s: ACTIVE (%d KU avail / %d KU total | -%d KU Fine | %.0f RPM)",
+                    "%s: ACTIVE (%s KU avail / %s KU total | -%d KU Fine | %s RPM)",
                     is_vert and "Vertical Gearbox" or "Gearbox",
-                    shared_avail_ku, total_supply_ku, GEARBOX_FINE_KU, shared_rpm
+                    format_int(shared_avail_ku), format_int(total_supply_ku),
+                    GEARBOX_FINE_KU, format_rpm(shared_rpm)
                 ))
                 core.get_node_timer(pos):start(WATCHDOG_SECONDS)
 
@@ -1037,8 +1124,9 @@ function kinetica.update_network(start_pos)
                     core.swap_node(pos, {name = target, param2 = node.param2})
                 end
                 meta:set_string("infotext", string.format(
-                    "Encased Chain Drive: ACTIVE (%d KU avail / %d KU total | %d drives (-%d KU Fine) | %.0f RPM)",
-                    shared_avail_ku, total_supply_ku, chain_drive_count, chain_drive_count * CHAIN_DRIVE_FINE_KU, shared_rpm
+                    "Encased Chain Drive: ACTIVE (%s KU avail / %s KU total | %d drives (-%d KU Fine) | %s RPM)",
+                    format_int(shared_avail_ku), format_int(total_supply_ku),
+                    chain_drive_count, chain_drive_count * CHAIN_DRIVE_FINE_KU, format_rpm(shared_rpm)
                 ))
                 core.get_node_timer(pos):start(WATCHDOG_SECONDS)
 
@@ -1052,11 +1140,36 @@ function kinetica.update_network(start_pos)
             elseif kinetica.is_mechanical_piston(name) then
                 meta:set_int("piston_demand_ku", per_piston_ku)
                 if kinetica.wake_mechanical_piston then
-                    kinetica.wake_mechanical_piston(pos, node, shared_rpm, nspin, per_piston_ku, shared_avail_ku, total_supply_ku)
+                    post_actions[#post_actions + 1] = function()
+                        kinetica.wake_mechanical_piston(pos, core.get_node(pos), shared_rpm, nspin, per_piston_ku, shared_avail_ku, total_supply_ku)
+                    end
                 else
                     local ptimer = core.get_node_timer(pos)
                     if not ptimer:is_started() then
                         ptimer:start(0.5)
+                    end
+                end
+
+            elseif kinetica.is_source_node(name, pos) then
+                local my_ku = meta:get_int("source_ku")
+                if kinetica.is_water_wheel(name) then
+                    meta:set_string("infotext", string.format(
+                        "Big Water Wheel [%d/%d]: ACTIVE (+%s KU | Shared Network: %s KU avail / %s KU total | %s RPM)",
+                        water_wheel_count, MAX_WATER_WHEELS,
+                        format_int(my_ku), format_int(shared_avail_ku), format_int(total_supply_ku), format_rpm(shared_rpm)
+                    ))
+                elseif kinetica.is_turbine(name) then
+                    local steam = meta:get_int("steam")
+                    if my_ku > 0 then
+                        meta:set_string("infotext", string.format(
+                            "Steam Turbine: ACTIVE (+%s KU | Shared Network: %s KU avail / %s KU total | %s RPM | Steam: %d%%)",
+                            format_int(my_ku), format_int(shared_avail_ku), format_int(total_supply_ku), format_rpm(shared_rpm), steam
+                        ))
+                    else
+                        meta:set_string("infotext", string.format(
+                            "Steam Turbine: PASSIVE AXLE (0 KU out | Network: %s KU avail / %s KU total | %s RPM)",
+                            format_int(shared_avail_ku), format_int(total_supply_ku), format_rpm(shared_rpm)
+                        ))
                     end
                 end
 
@@ -1065,33 +1178,13 @@ function kinetica.update_network(start_pos)
                 local m_ku = info.machine_demand_ku or 16
                 meta:set_int("machine_demand_ku", m_ku)
                 if mdef and mdef.wake then
-                    mdef.wake(pos, node, shared_rpm, nspin, m_ku, shared_avail_ku, total_supply_ku)
+                    post_actions[#post_actions + 1] = function()
+                        mdef.wake(pos, core.get_node(pos), shared_rpm, nspin, m_ku, shared_avail_ku, total_supply_ku)
+                    end
                 else
                     local mtimer = core.get_node_timer(pos)
                     if not mtimer:is_started() then
                         mtimer:start(0.5)
-                    end
-                end
-
-            elseif kinetica.is_source_node(name) then
-                local my_ku = meta:get_int("source_ku")
-                if kinetica.is_water_wheel(name) then
-                    meta:set_string("infotext", string.format(
-                        "Big Water Wheel [%d/%d]: ACTIVE (+%d KU | Shared Network: %d KU avail / %d KU total | %.0f RPM)",
-                        water_wheel_count, MAX_WATER_WHEELS, my_ku, shared_avail_ku, total_supply_ku, shared_rpm
-                    ))
-                elseif kinetica.is_turbine(name) then
-                    local steam = meta:get_int("steam")
-                    if my_ku > 0 then
-                        meta:set_string("infotext", string.format(
-                            "Steam Turbine: ACTIVE (+%d KU | Shared Network: %d KU avail / %d KU total | %.0f RPM | Steam: %d%%)",
-                            my_ku, shared_avail_ku, total_supply_ku, shared_rpm, steam
-                        ))
-                    else
-                        meta:set_string("infotext", string.format(
-                            "Steam Turbine: PASSIVE AXLE (0 KU out | Network: %d KU avail / %d KU total | %.0f RPM)",
-                            shared_avail_ku, total_supply_ku, shared_rpm
-                        ))
                     end
                 end
 
@@ -1104,7 +1197,8 @@ function kinetica.update_network(start_pos)
         end
     end
 
-    solver_running = false
+    solver_depth = solver_depth - 1
+    run_post_solve_actions(post_actions)
 end
 
 function kinetica.schedule_network_update(pos)
@@ -1193,7 +1287,7 @@ local function register_shaft_variant(node_name, right_tile, left_tile, back_til
         groups = is_base and base_groups or active_groups,
         _mcl_hardness = 2.0,
         _mcl_blast_resistance = 3.0,
-        sounds = mcl_sounds.node_sound_metal_defaults(),
+        sounds = mcl_sounds and mcl_sounds.node_sound_metal_defaults and mcl_sounds.node_sound_metal_defaults() or nil,
 
         on_construct = is_base and function(pos)
             kinetica.set_node_idle(pos, core.get_node(pos))

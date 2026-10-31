@@ -1,5 +1,9 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+local PRESS_SOUND_NAME = nil
+
 local CONFIG = {
     MIN_RPM                       = 1,
     BASE_SPEED_RPM                = 16,
@@ -12,8 +16,8 @@ local CONFIG = {
     MAX_BATCH_SIZE                = 64,
     MAX_STROKE_OFFSET             = 0.75,
     TEX_STONE_FALLBACK            = "default_stone.png",
-    TEX_IRON_FALLBACK             = "default_steel_block.png",
-    TEX_WOOD_FALLBACK             = "default_wood.png",
+    TEX_IRON_FALLBACK             = "create_mechanical_press_head.png",
+    TEX_WOOD_FALLBACK             = "create_mechanical_press_head.png",
     TEX_SHAFT_OVERLAY             = "kinetica_shaft_connecting_overlay.png",
 }
 
@@ -79,6 +83,38 @@ local function resolve_item_particle_texture(item_name)
         return def.inventory_image
     end
     return STONE_TEX
+end
+
+local function resolve_press_sound()
+    local custom = "kinetica_press_stamp"
+    local f = io.open(modpath .. "/sounds/" .. custom .. ".ogg", "r")
+    if f then
+        f:close()
+        return custom
+    end
+    if mcl_sounds and mcl_sounds.node_sound_metal_defaults then
+        local ms = mcl_sounds.node_sound_metal_defaults()
+        if ms and ms.dug and ms.dug.name then
+            return ms.dug.name
+        end
+    end
+    local iron_def = core.registered_nodes["mcl_core:ironblock"]
+    if iron_def and iron_def.sounds and iron_def.sounds.place and iron_def.sounds.place.name then
+        return iron_def.sounds.place.name
+    end
+    return "default_place_node_hard"
+end
+
+local function play_press_stamp_sound(pos)
+    if not PRESS_SOUND_NAME then
+        PRESS_SOUND_NAME = resolve_press_sound()
+    end
+    core.sound_play(PRESS_SOUND_NAME, {
+        pos               = pos,
+        gain              = 0.85,
+        pitch             = 0.75 + math.random() * 0.10,
+        max_hear_distance = 16,
+    }, true)
 end
 
 kinetica.pressing_recipes = kinetica.pressing_recipes or {}
@@ -510,7 +546,7 @@ local function process_mechanical_press(pos, meta, rpm)
 
     local pstate = PRESS_STATE[phash]
     if not pstate or pstate.item_name ~= item_name then
-        pstate = {item_name = item_name, prog = 0}
+        pstate = {item_name = item_name, prog = 0, stamped_sound = false}
         PRESS_STATE[phash] = pstate
     end
 
@@ -522,6 +558,12 @@ local function process_mechanical_press(pos, meta, rpm)
     -- Triangle wave stroke: plunges down to 1.0 at 70% progress, then retracts
     local stroke = (ratio <= 0.70) and (ratio / 0.70) or ((1.0 - ratio) / 0.30)
     sync_press_ram_entity(pos, stroke)
+
+    -- Play stamping sound once when the ram reaches full extension
+    if ratio >= 0.70 and not pstate.stamped_sound then
+        pstate.stamped_sound = true
+        play_press_stamp_sound(pos)
+    end
 
     if pstate.prog >= total_need then
         local out_base  = ItemStack(found_recipe.output)

@@ -3,20 +3,37 @@ kinetica = kinetica or {}
 local modname = core.get_current_modname() or "kinetica"
 local modpath = core.get_modpath(modname) or ""
 
+-- ============================================================================
+-- SOUND CUSTOMIZATION (Plays ONLY when Encased Fan is actively spinning)
+-- ============================================================================
+local SOUND_CONFIG = {
+    ENABLE_SOUND         = true,
+    SOUND_NAME           = "kinetica_encased_fan", -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_FALLBACK       = "default_cool_lava",    -- Built-in fallback sound if custom .ogg is missing
+    SOUND_GAIN           = 0.22,                   -- Volume (0.0 to 1.0)
+    SOUND_PITCH          = 0.90,                   -- Base pitch when SCALE_PITCH_WITH_RPM = false
+    SCALE_PITCH_WITH_RPM = true,                   -- Scale pitch dynamically with shaft RPM
+    MIN_PITCH            = 0.70,                   -- Pitch at MIN_RPM (16 RPM)
+    MAX_PITCH            = 1.40,                   -- Pitch at 512+ RPM
+    SOUND_INTERVAL       = 0.01,                   -- Seconds between sound triggers while active
+    MAX_HEAR_DISTANCE    = 14,                     -- Max distance (blocks) players can hear it
+}
+
 local CONFIG = {
-    NOZZLE_FACES_PLAYER           = false,
+    NOZZLE_FACES_PLAYER           = true,
     CW_ROTATION_PUSHES            = true,
     MIN_RPM                       = 16,
     KU_PER_RPM                    = 2,
     MIN_KU                        = 32,
     MAX_KU                        = 128,
-    MAX_RPM_CAP                   = 1024,
+    MAX_RPM_CAP                   = 3072,
     ANIM_TIERS = {
         { name = "crawl",  max_rpm = 5,    length = 0.85 },
         { name = "slow",   max_rpm = 15,   length = 0.48 },
         { name = "medium", max_rpm = 63,   length = 0.24 },
         { name = "fast",   max_rpm = 255,  length = 0.11 },
         { name = "hyper",  max_rpm = 1024, length = 0.05 },
+        { name = "ultra",  max_rpm = 3072, length = 0.03 },
     },
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     TICK_INTERVAL                 = 0.20,
@@ -35,7 +52,7 @@ local CONFIG = {
     SCALE_TIME_BY_STACK_SIZE      = true,
     CATALYST_DAMAGE_INTERVAL      = 1.0,
     TEX_FAN_FRONT                 = "kinetica_encased_fan_front.png",
-    TEX_FAN_BACK                  = "kinetica_encased_fan_front.png",
+    TEX_FAN_BACK                  = "kinetica_encased_fan_back.png",
     TEX_FAN_SIDE                  = "kinetica_andisite_casing.png",
     TEX_FALLBACK_FRONT            = "mcl_stonecutter_top.png",
     TEX_FALLBACK_BACK             = "kinetica_chain_drive_front.png",
@@ -48,6 +65,50 @@ local ACT_CW     = "kinetica:encased_fan_active_cw"
 local ACT_CCW    = "kinetica:encased_fan_active_ccw"
 local CHUTE_NAME = "kinetica:chute"
 local DEPOT_NAME = "kinetica:depot"
+
+local function resolve_sound_name(cfg)
+    if cfg.SOUND_NAME and cfg.SOUND_NAME ~= "" then
+        local f = io.open(modpath .. "/sounds/" .. cfg.SOUND_NAME .. ".ogg", "r")
+        if f then
+            f:close()
+            return cfg.SOUND_NAME
+        end
+    end
+    if cfg.SOUND_FALLBACK and cfg.SOUND_FALLBACK ~= "" then
+        return cfg.SOUND_FALLBACK
+    end
+    return cfg.SOUND_NAME
+end
+
+local RESOLVED_SOUND = resolve_sound_name(SOUND_CONFIG)
+
+local function play_fan_active_sound(pos, meta, rpm, dt)
+    if not SOUND_CONFIG.ENABLE_SOUND or not RESOLVED_SOUND or RESOLVED_SOUND == "" then
+        return
+    end
+
+    local acc = meta:get_float("sfx_timer") + (dt or CONFIG.TICK_INTERVAL)
+    if acc < (SOUND_CONFIG.SOUND_INTERVAL or 1.20) then
+        meta:set_float("sfx_timer", acc)
+        return
+    end
+    meta:set_float("sfx_timer", 0)
+
+    local pitch = SOUND_CONFIG.SOUND_PITCH or 0.90
+    if SOUND_CONFIG.SCALE_PITCH_WITH_RPM then
+        local t = math.min(1.0, math.max(0.0, ((rpm or CONFIG.MIN_RPM) - CONFIG.MIN_RPM) / (512 - CONFIG.MIN_RPM)))
+        local min_p = SOUND_CONFIG.MIN_PITCH or 0.70
+        local max_p = SOUND_CONFIG.MAX_PITCH or 1.40
+        pitch = min_p + t * (max_p - min_p)
+    end
+
+    core.sound_play(RESOLVED_SOUND, {
+        pos               = pos,
+        gain              = SOUND_CONFIG.SOUND_GAIN or 0.22,
+        pitch             = pitch,
+        max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 14,
+    }, true)
+end
 
 local function is_fan_node(name)
     if not name then return false end
@@ -223,7 +284,7 @@ local function place_encased_fan(itemstack, placer, pointed_thing)
     local fan_dir = nil
 
     if not sneaking then
-        if (kinetica.has_axle_port and kinetica.has_axle_port(under_node, diff)) or
+        if (kinetica.has_axle_port and kinetica.has_axle_port(under_node, diff, under_pos)) or
            (kinetica.is_mechanical_piston and kinetica.is_mechanical_piston(under_node.name)) or
            under_node.name == "kinetica:piston_head" or
            under_node.name == "kinetica:piston_head_sticky" then
@@ -253,6 +314,7 @@ local function place_encased_fan(itemstack, placer, pointed_thing)
         meta:set_string("active", "false")
         meta:set_string("airflow_dir", "none")
         meta:set_int("is_pull", 0)
+        meta:set_float("sfx_timer", 0)
     end
     return placed_stack
 end
@@ -303,7 +365,6 @@ local function classify_stream_node(node_name, fan_dir)
         return false, nil
     end
 
-    -- Block airflow at funnels so fans cannot brute-force items or bubbles through them
     if (kinetica.is_funnel and kinetica.is_funnel(node_name)) or
        core.get_item_group(node_name, "kinetica_funnel") > 0 then
         return false, nil
@@ -1002,6 +1063,7 @@ local function set_fan_idle(pos, node, reason_text)
     meta:set_int("is_pull", 0)
     meta:set_int("last_reach", 0)
     meta:set_string("last_catalyst", "")
+    meta:set_float("sfx_timer", 0)
 
     local fan_dir = get_fan_dir(node.param2)
     brake_items_in_corridor(pos, fan_dir, CONFIG.RANGE_AT_512_RPM + 1)
@@ -1076,6 +1138,9 @@ local function fan_timer(pos, elapsed)
         core.swap_node(pos, {name = target_active, param2 = node.param2})
         node.name = target_active
     end
+
+    -- Play sound ONLY while the fan is actively spinning
+    play_fan_active_sound(pos, meta, rpm, CONFIG.TICK_INTERVAL)
 
     local fan_dir = get_fan_dir(node.param2)
     local wind_dir, is_pull, mode_lbl = compute_wind_dir(meta, fan_dir, spin_dir)
@@ -1191,6 +1256,7 @@ local function register_fan_variant(node_name, back_tile, is_base)
         on_construct = is_base and function(pos)
             local meta = core.get_meta(pos)
             meta:set_int("invert_dir", 0)
+            meta:set_float("sfx_timer", 0)
             set_fan_idle(pos, core.get_node(pos))
             if kinetica.schedule_network_update then
                 kinetica.schedule_network_update(pos)

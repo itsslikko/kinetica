@@ -1,14 +1,21 @@
 kinetica = kinetica or {}
 
+local modname = core.get_current_modname() or "kinetica"
+local modpath = core.get_modpath(modname) or ""
+
+
 local SOUND_CONFIG = {
-    ENABLE_SOUND          = false,
-    SOUND_NAME            = "Turbine_Sound",
-    SOUND_FALLBACK        = "default_dig_cracky",
-    SOUND_GAIN            = 0.10,
-    SOUND_PITCH           = 0.80,
-    SCALE_PITCH_WITH_RPM  = true,
-    SOUND_INTERVAL        = 1.00,
-    MAX_HEAR_DISTANCE     = 12,
+    ENABLE_SOUND            = true,
+    SOUND_NAME              = "Turbine_Sound",      -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_FALLBACK          = "default_dig_cracky", -- Built-in fallback sound if custom .ogg is missing
+    SOUND_GAIN              = 0.15,                 -- Volume (0.0 to 1.0)
+    SOUND_PITCH             = 0.80,                 -- Base pitch when SCALE_PITCH_WITH_RPM = false
+    SCALE_PITCH_WITH_RPM    = true,                 -- Scale pitch dynamically with shaft RPM
+    MIN_PITCH               = 0.65,                 -- Pitch at low RPM
+    MAX_PITCH               = 1.15,                 -- Pitch at 512+ RPM
+    SOUND_INTERVAL          = 0.01,                 -- Seconds between sound triggers while active
+    MAX_HEAR_DISTANCE       = 12,                   -- Max distance (blocks) players can hear it
+    SOUND_ONLY_SELF_POWERED = true,                 -- true = only play when fed steam; false = also play when spun passively by a shaft
 }
 
 local CONFIG = {
@@ -18,7 +25,7 @@ local CONFIG = {
     EXHAUST_PER_SEC               = 15,
     MIN_STEAM_TO_RUN              = 10,
     MAX_DIRECT_CHAIN              = 3,
-    MAX_RPM_CAP                   = 1024,
+    MAX_RPM_CAP                   = 3072,
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     ANIM_TIERS = {
         { name = "crawl",  max_rpm = 5,    length = 0.85 },
@@ -26,6 +33,7 @@ local CONFIG = {
         { name = "medium", max_rpm = 63,   length = 0.24 },
         { name = "fast",   max_rpm = 255,  length = 0.11 },
         { name = "hyper",  max_rpm = 1024, length = 0.05 },
+        { name = "ultra",  max_rpm = 3072, length = 0.03 },
     },
     TEX_PORT_BACK                 = "kinetica_turbo_back.png",
     TEX_SIDE                      = "kinetica_turbo_side.png",
@@ -46,6 +54,53 @@ local MAX_DIRECT_CHAIN  = CONFIG.MAX_DIRECT_CHAIN
 
 kinetica.TURBINE_KU  = TURBINE_KU
 kinetica.TURBINE_RPM = TURBINE_RPM
+
+local function resolve_sound_name(cfg)
+    if cfg.SOUND_NAME and cfg.SOUND_NAME ~= "" then
+        local f = io.open(modpath .. "/sounds/" .. cfg.SOUND_NAME .. ".ogg", "r")
+        if f then
+            f:close()
+            return cfg.SOUND_NAME
+        end
+    end
+    if cfg.SOUND_FALLBACK and cfg.SOUND_FALLBACK ~= "" then
+        return cfg.SOUND_FALLBACK
+    end
+    return cfg.SOUND_NAME
+end
+
+local RESOLVED_SOUND = resolve_sound_name(SOUND_CONFIG)
+
+local function play_turbine_active_sound(pos, meta, eff_rpm, is_self_powered, dt)
+    if not SOUND_CONFIG.ENABLE_SOUND or not RESOLVED_SOUND or RESOLVED_SOUND == "" then
+        return
+    end
+    if SOUND_CONFIG.SOUND_ONLY_SELF_POWERED and not is_self_powered then
+        return
+    end
+
+    local acc = meta:get_float("sfx_timer") + (dt or 1.0)
+    if acc < (SOUND_CONFIG.SOUND_INTERVAL or 1.0) then
+        meta:set_float("sfx_timer", acc)
+        return
+    end
+    meta:set_float("sfx_timer", 0)
+
+    local pitch = SOUND_CONFIG.SOUND_PITCH or 0.80
+    if SOUND_CONFIG.SCALE_PITCH_WITH_RPM then
+        local t = math.min(1.0, math.max(0.0, (eff_rpm or TURBINE_RPM) / TURBINE_RPM))
+        local min_p = SOUND_CONFIG.MIN_PITCH or 0.65
+        local max_p = SOUND_CONFIG.MAX_PITCH or 1.15
+        pitch = min_p + t * (max_p - min_p)
+    end
+
+    core.sound_play(RESOLVED_SOUND, {
+        pos               = pos,
+        gain              = SOUND_CONFIG.SOUND_GAIN or 0.15,
+        pitch             = pitch,
+        max_hear_distance = SOUND_CONFIG.MAX_HEAR_DISTANCE or 12,
+    }, true)
+end
 
 local function is_turbine_node(name)
     if not name then return false end
@@ -217,6 +272,7 @@ local function turbine_timer(pos, elapsed)
         meta:set_int("source_active", 0)
         meta:set_int("source_ku", 0)
         meta:set_float("source_rpm", 0)
+        meta:set_float("sfx_timer", 0)
         if not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
             meta:set_string("infotext", "Steam Turbine: OVERLOADED (Max 3 Turbines directly chained - use a Shaft!)")
         end
@@ -286,8 +342,11 @@ local function turbine_timer(pos, elapsed)
 
     if should_spin_vis then
         sync_turbine_tier(pos)
+        -- Play sound ONLY while the turbine is actively spinning and not overstressed
+        play_turbine_active_sound(pos, meta, eff_rpm, is_self_powered, 1.0)
         return true
     else
+        meta:set_float("sfx_timer", 0)
         if not is_overstressed and not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
             if exhaust_blocked then
                 meta:set_string("infotext", "Steam Turbine: CHOKED (Top Exhaust Vent is Blocked!)")
@@ -358,6 +417,7 @@ local function register_turbine_variant(node_name, back_tile, front_tile, is_bas
             meta:set_float("source_rpm", 0)
             meta:set_int("chain_len", 1)
             meta:set_int("exhaust_blocked", 0)
+            meta:set_float("sfx_timer", 0)
             if not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
                 meta:set_string("infotext", string.format(
                     "Steam Turbine: Idle (Feed Steam to Right Port -> %d KU @ %d RPM)",

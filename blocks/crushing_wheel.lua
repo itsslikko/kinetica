@@ -27,6 +27,11 @@ local CONFIG = {
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     TEX_STONE_FALLBACK            = "default_stone.png",
     TEX_SHAFT_OVERLAY             = "kinetica_shaft_connecting_overlay.png",
+    ENABLE_WHEEL_SOUND            = true,
+    SOUND_WHEEL_CUSTOM            = "stone_crusher", 
+    SOUND_WHEEL_GAIN              = 0.4,
+    SOUND_WHEEL_MAX_DISTANCE      = 10,
+    SOUND_WHEEL_INTERVAL_SEC      = 0, 
 }
 
 local IDLE_NAME         = "kinetica:crushing_wheel"
@@ -1620,6 +1625,25 @@ local function wheel_timer(pos, elapsed)
     local is_active = eff_pow and (eff_rpm >= CONFIG.MIN_RPM)
     local demand_ku = is_active and calc_wheel_demand_ku(eff_rpm) or 0
     meta:set_int("machine_demand_ku", demand_ku)
+
+    if CONFIG.ENABLE_WHEEL_SOUND then
+        if is_active then
+            local sound_timer = meta:get_float("wheel_sound_timer") + CONFIG.TIMER_INTERVAL
+            if sound_timer >= CONFIG.SOUND_WHEEL_INTERVAL_SEC then
+                core.sound_play(CONFIG.SOUND_WHEEL_CUSTOM, {
+                    pos = pos,
+                    max_hear_distance = CONFIG.SOUND_WHEEL_MAX_DISTANCE,
+                    gain = CONFIG.SOUND_WHEEL_GAIN
+                }, true)
+                sound_timer = 0
+            end
+            meta:set_float("wheel_sound_timer", sound_timer)
+        else
+            
+            meta:set_float("wheel_sound_timer", CONFIG.SOUND_WHEEL_INTERVAL_SEC)
+        end
+    end
+
 
     local speed_rad = 0
     if is_active then
