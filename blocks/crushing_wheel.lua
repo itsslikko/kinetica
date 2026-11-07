@@ -1,5 +1,8 @@
 kinetica = kinetica or {}
 
+-- ============================================================================
+-- TOP CONFIGURATION SECTION
+-- ============================================================================
 local CONFIG = {
     MIN_RPM                       = 1,
     BASE_SPEED_RPM                = 16,
@@ -8,14 +11,15 @@ local CONFIG = {
     MAX_DEMAND_KU                 = 1024,
     RPM_SPEED_EXPONENT            = 1.00,
     STACK_TIME_LOG_FACTOR         = 0.16,
-    TIMER_INTERVAL                = 0.10,
-    ALLOW_GEAR_MESH_PARTNER       = true,
+    TIMER_INTERVAL                = 0.20,
+    ALLOW_GEAR_MESH_PARTNER       = false,
     SOLO_SPIN_DIR                 = 1,
     WHEEL_SCALE_BELT_GAP          = 1.55,
     WHEEL_SCALE_ADJACENT          = 1.16,
     BASE_SPIN_RAD_PER_SEC         = 1.80,
     MAX_SPIN_RAD_PER_SEC          = 16.0,
-    INVERT_VISUAL_SPIN            = false,
+    INVERT_VISUAL_SPIN            = true,
+    INVERT_SEAM_FLOW              = false,
     DRAG_PULL_SPEED               = 7.50,
     MAX_BATCH_SIZE                = 64,
     AUTO_MERGE_INTAKE_STACKS      = true,
@@ -28,10 +32,10 @@ local CONFIG = {
     TEX_STONE_FALLBACK            = "default_stone.png",
     TEX_SHAFT_OVERLAY             = "kinetica_shaft_connecting_overlay.png",
     ENABLE_WHEEL_SOUND            = true,
-    SOUND_WHEEL_CUSTOM            = "stone_crusher", 
+    SOUND_WHEEL_CUSTOM            = "stone_crusher",
     SOUND_WHEEL_GAIN              = 0.4,
     SOUND_WHEEL_MAX_DISTANCE      = 10,
-    SOUND_WHEEL_INTERVAL_SEC      = 0, 
+    SOUND_WHEEL_INTERVAL_SEC      = 23.0,
 }
 
 local IDLE_NAME         = "kinetica:crushing_wheel"
@@ -103,7 +107,7 @@ local function resolve_valid_itemstring(item_with_count)
         ["mcl_dye:green"]         = "mcl_dyes:green",
         ["mcl_dyes:red"]          = "mcl_dye:red",
         ["mcl_dye:red"]           = "mcl_dyes:red",
-        ["mcl_dyes:lime"]         = "mcl_dye:lime",
+        ["mcl_dyes:lime"]        = "mcl_dye:lime",
         ["mcl_dye:lime"]          = "mcl_dyes:lime",
         ["mcl_dyes:white"]        = "mcl_dye:white",
         ["mcl_dye:white"]         = "mcl_dyes:white",
@@ -812,6 +816,8 @@ local function is_valid_middle_space(name)
     return false
 end
 
+-- Create-Mod style pairing: requires opposite rotation (my_spin == -p_spin) and
+-- calculates dynamic intake/output feed_dir from the 3D cross product (axis x d) * spin
 local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_spin)
     local perp_dirs = {}
     if axis.y ~= 0 then
@@ -854,20 +860,27 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                         local pmeta = core.get_meta(ppos)
                         local p_pow, p_rpm, p_sup, p_ava, p_spin = read_wheel_direct_power(ppos, p_axis, pmeta)
 
-                        local eff_pow    = my_pow or (CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow)
-                        local eff_rpm    = my_pow and my_rpm or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_rpm or 0)
-                        local eff_sup    = my_pow and my_sup or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_sup or 0)
-                        local eff_ava    = my_pow and my_ava or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and p_ava or 0)
-                        local eff_spin   = my_pow and my_spin or ((CONFIG.ALLOW_GEAR_MESH_PARTNER and p_pow) and (-p_spin) or 1)
-                        local pair_ready = false
-                        local pair_rpm   = 0
+                        local eff_pow       = my_pow
+                        local eff_rpm       = my_pow and my_rpm or 0
+                        local eff_sup       = my_sup
+                        local eff_ava       = my_ava
+                        local eff_spin      = my_spin
+                        local both_powered  = (my_pow and p_pow and my_rpm >= CONFIG.MIN_RPM and p_rpm >= CONFIG.MIN_RPM)
+                        local opposite_spin = both_powered and (my_spin ~= 0) and (p_spin ~= 0) and (my_spin == -p_spin)
+                        local same_spin_err = both_powered and (my_spin ~= 0) and (my_spin == p_spin)
+                        local pair_ready    = opposite_spin
+                        local pair_rpm      = pair_ready and math.min(my_rpm, p_rpm) or 0
 
-                        if my_pow and p_pow and my_rpm >= CONFIG.MIN_RPM and p_rpm >= CONFIG.MIN_RPM then
-                            pair_ready = true
-                            pair_rpm   = math.max(my_rpm, p_rpm)
-                        elseif CONFIG.ALLOW_GEAR_MESH_PARTNER and eff_pow and eff_rpm >= CONFIG.MIN_RPM then
-                            pair_ready = true
-                            pair_rpm   = eff_rpm
+                        if CONFIG.ALLOW_GEAR_MESH_PARTNER and not both_powered then
+                            eff_pow  = my_pow or p_pow
+                            eff_rpm  = my_pow and my_rpm or (p_pow and p_rpm or 0)
+                            eff_sup  = my_pow and my_sup or (p_pow and p_sup or 0)
+                            eff_ava  = my_pow and my_ava or (p_pow and p_ava or 0)
+                            eff_spin = my_pow and my_spin or (p_pow and (-p_spin) or 1)
+                            if eff_pow and eff_rpm >= CONFIG.MIN_RPM then
+                                pair_ready = true
+                                pair_rpm   = eff_rpm
+                            end
                         end
 
                         local is_master = (pos.x < ppos.x) or
@@ -880,41 +893,23 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                             z = (pos.z + ppos.z) * 0.5,
                         }
 
-                        local feed_dir        = {x = 0, y = -1, z = 0}
-                        local inward_vis_spin = eff_spin
-                        local mid_name        = core.get_node(mid_pos).name
+                        -- Cross product (axis x d) * eff_spin gives the exact tangent velocity at the center seam
+                        local cx = (axis.y * d.z) - (axis.z * d.y)
+                        local cy = (axis.z * d.x) - (axis.x * d.z)
+                        local cz = (axis.x * d.y) - (axis.y * d.x)
+                        local s  = (eff_spin ~= 0) and eff_spin or 1
+                        if CONFIG.INVERT_SEAM_FLOW then
+                            s = -s
+                        end
 
-                        if axis.y == 0 and d.y == 0 then
-                            if dist == 2 and ((kinetica.is_belt and kinetica.is_belt(mid_name)) or string.find(mid_name, "belt")) then
-                                local bnode = core.get_node(mid_pos)
-                                local bdir  = core.facedir_to_dir((bnode.param2 or 0) % 4)
-                                if bdir then
-                                    local tsign = string.find(bnode.name, "_rev", 1, true) and -1 or 1
-                                    feed_dir = {x = -bdir.x * tsign, y = 0, z = -bdir.z * tsign}
-                                end
-                            end
-                            local side_sign = (d.x + d.z)
-                            inward_vis_spin = (side_sign > 0) and 1 or -1
-                        else
-                            local horiz_perp = {x = -d.z, y = 0, z = d.x}
-                            if horiz_perp.x == 0 and horiz_perp.z == 0 then
-                                horiz_perp = (axis.x ~= 0) and {x = 0, y = 0, z = 1} or {x = 1, y = 0, z = 0}
-                            end
-                            if dist == 2 and ((kinetica.is_belt and kinetica.is_belt(mid_name)) or string.find(mid_name, "belt")) then
-                                local bnode = core.get_node(mid_pos)
-                                local bdir  = core.facedir_to_dir((bnode.param2 or 0) % 4)
-                                if bdir then
-                                    local tsign = string.find(bnode.name, "_rev", 1, true) and -1 or 1
-                                    horiz_perp = {x = -bdir.x * tsign, y = 0, z = -bdir.z * tsign}
-                                end
-                            end
-                            feed_dir = {
-                                x = (horiz_perp.x ~= 0) and (horiz_perp.x > 0 and 1 or -1) or 0,
-                                y = 0,
-                                z = (horiz_perp.z ~= 0) and (horiz_perp.z > 0 and 1 or -1) or 0,
-                            }
-                            local side_sign = (d.x + d.y + d.z)
-                            inward_vis_spin = (side_sign > 0) and 1 or -1
+                        local feed_dir = {
+                            x = (cx ~= 0) and ((cx * s > 0) and 1 or -1) or 0,
+                            y = (cy ~= 0) and ((cy * s > 0) and 1 or -1) or 0,
+                            z = (cz ~= 0) and ((cz * s > 0) and 1 or -1) or 0,
+                        }
+
+                        if feed_dir.x == 0 and feed_dir.y == 0 and feed_dir.z == 0 then
+                            feed_dir = {x = 0, y = -1, z = 0}
                         end
 
                         return {
@@ -929,9 +924,10 @@ local function find_paired_wheel(pos, axis, my_pow, my_rpm, my_sup, my_ava, my_s
                             eff_ava         = eff_ava,
                             eff_spin        = eff_spin,
                             pair_ready      = pair_ready,
+                            same_spin_err   = same_spin_err,
                             pair_rpm        = pair_rpm,
                             feed_dir        = feed_dir,
-                            inward_vis_spin = inward_vis_spin,
+                            inward_vis_spin = (eff_spin ~= 0) and eff_spin or CONFIG.SOLO_SPIN_DIR,
                         }
                     end
                 end
@@ -1084,7 +1080,8 @@ end
 
 local function dir_to_compass(v)
     if not v then return "Top (+Y) -> Down (-Y)" end
-    if v.y < 0 then return "Drop from TOP (+Y) -> Down (-Y)" end
+    if v.y < 0 then return "From TOP (+Y) -> Down (-Y)" end
+    if v.y > 0 then return "From BOTTOM (-Y) -> Up (+Y)" end
     if v.x > 0 then return "From WEST (-X) -> East (+X)" end
     if v.x < 0 then return "From EAST (+X) -> West (-X)" end
     if v.z > 0 then return "From SOUTH (-Z) -> North (+Z)" end
@@ -1107,7 +1104,7 @@ local function format_crushing_wheel_glasses_info(pos, node)
 
     local orient_str = (axis.y ~= 0) and "Laying Flat (Vertical Y Axle)" or "Standing Upright (Horiz Axle)"
     local pair_str   = "Unpaired (Place 2nd Wheel Next to Rim)"
-    local feed_str   = (axis.y ~= 0) and "Single Inward Angle (Horiz)" or "Drop from TOP (+Y) / Belt"
+    local feed_str   = (axis.y ~= 0) and "Matches Opposite Spin Direction" or "Matches Opposite Spin (Top/Bottom)"
     local item_str   = ""
     local prog_pct   = 0
     local state_str  = "IDLE (Connect Energy Port to Axle)"
@@ -1120,11 +1117,13 @@ local function format_crushing_wheel_glasses_info(pos, node)
         pair_str    = (pair.dist == 2) and "Paired (Touching Over Middle Gap/Belt)" or "Paired (Touching Directly)"
         feed_str    = dir_to_compass(pair.feed_dir)
 
-        if pair.pair_ready then
+        if pair.same_spin_err then
+            state_str = "SAME SPIN DIRECTION (Reverse 1 Wheel!)"
+        elseif pair.pair_ready then
             speed_mult = calc_crush_speed_multiplier(pair.pair_rpm)
-            state_str  = (item_str ~= "") and ("CRUSHING (" .. item_str .. ")") or "PAIRED & SPINNING INWARD"
+            state_str  = (item_str ~= "") and ("CRUSHING (" .. item_str .. ")") or "PAIRED & SPINNING OPPOSITE"
         elseif eff_pow and eff_rpm >= CONFIG.MIN_RPM then
-            state_str = "SPINNING (Power Partner Wheel Axle!)"
+            state_str = "SPINNING (Power Partner Wheel Opposite!)"
         elseif eff_pow and eff_rpm > 0 then
             state_str = string.format("TOO SLOW (Min %d RPM)", CONFIG.MIN_RPM)
         else
@@ -1150,7 +1149,7 @@ local function format_crushing_wheel_glasses_info(pos, node)
         LINE_DET,
         kv_row("Orientation", orient_str),
         kv_row("Wheel Pair",  pair_str),
-        kv_row("Inward Feed", feed_str),
+        kv_row("In -> Out",   feed_str),
         kv_row("Max Batch",   string.format("%d Items / Stack", CONFIG.MAX_BATCH_SIZE)),
         kv_row("Crushing",    (item_str ~= "") and item_str or "Waiting for Items"),
         kv_row("Progress",    make_bar(prog_pct, 100)),
@@ -1165,7 +1164,7 @@ local function spawn_crush_xp_orbs(seam_pos, feed_dir, total_xp)
     if not CONFIG.SPAWN_CRUSH_XP_ORBS or not total_xp or total_xp <= 0 then return end
     local xp_pos = {
         x = seam_pos.x + feed_dir.x * 0.35,
-        y = (feed_dir.y < 0) and (seam_pos.y - 0.25) or (seam_pos.y + 0.20),
+        y = seam_pos.y + (feed_dir.y ~= 0 and (feed_dir.y * 0.30) or 0.20),
         z = seam_pos.z + feed_dir.z * 0.35,
     }
     if mcl_experience and mcl_experience.throw_xp then
@@ -1222,8 +1221,16 @@ local function compute_safe_eject_pos(seam_pos, feed_dir)
         elseif is_belt_below then
             return {x = seam_pos.x, y = below_pos.y + 0.30, z = seam_pos.z}
         else
-            -- Solid floor directly under the wheels: spawn above the floor surface so items never bury
             return {x = seam_pos.x, y = seam_pos.y - 0.20, z = seam_pos.z}
+        end
+    elseif feed_dir.y > 0 then
+        local above_pos  = vector.round({x = seam_pos.x, y = seam_pos.y + 1, z = seam_pos.z})
+        local above_node = core.get_node(above_pos)
+        local above_def  = core.registered_nodes[above_node.name]
+        if above_node.name == "air" or (above_def and not above_def.walkable) then
+            return {x = seam_pos.x, y = seam_pos.y + 0.65, z = seam_pos.z}
+        else
+            return {x = seam_pos.x, y = seam_pos.y + 0.30, z = seam_pos.z}
         end
     else
         return {
@@ -1239,10 +1246,16 @@ local function eject_crushed_outputs(master_pos, partner_pos, seam_pos, feed_dir
     local check_containers = {
         vector.round(seam_pos),
         vector.round({x = seam_pos.x + feed_dir.x, y = seam_pos.y + feed_dir.y, z = seam_pos.z + feed_dir.z}),
-        vector.round({x = seam_pos.x, y = seam_pos.y - 1, z = seam_pos.z}),
-        {x = master_pos.x,  y = master_pos.y - 1,  z = master_pos.z},
-        {x = partner_pos.x, y = partner_pos.y - 1, z = partner_pos.z},
     }
+    if feed_dir.y <= 0 then
+        check_containers[#check_containers + 1] = vector.round({x = seam_pos.x, y = seam_pos.y - 1, z = seam_pos.z})
+        check_containers[#check_containers + 1] = {x = master_pos.x,  y = master_pos.y - 1,  z = master_pos.z}
+        check_containers[#check_containers + 1] = {x = partner_pos.x, y = partner_pos.y - 1, z = partner_pos.z}
+    else
+        check_containers[#check_containers + 1] = vector.round({x = seam_pos.x, y = seam_pos.y + 1, z = seam_pos.z})
+        check_containers[#check_containers + 1] = {x = master_pos.x,  y = master_pos.y + 1,  z = master_pos.z}
+        check_containers[#check_containers + 1] = {x = partner_pos.x, y = partner_pos.y + 1, z = partner_pos.z}
+    end
 
     local spawn_p = compute_safe_eject_pos(seam_pos, feed_dir)
 
@@ -1265,9 +1278,15 @@ local function eject_crushed_outputs(master_pos, partner_pos, seam_pos, feed_dir
                         ent._kinetica_crush_cd        = (core.get_us_time() / 1e6) + 2.50
                     end
                     obj:set_acceleration({x = 0, y = -9.81, z = 0})
+                    local vy = 0.10
+                    if feed_dir.y < 0 then
+                        vy = -1.0
+                    elseif feed_dir.y > 0 then
+                        vy = 2.6
+                    end
                     obj:set_velocity({
                         x = feed_dir.x * 1.4,
-                        y = (feed_dir.y < 0) and -1.0 or 0.10,
+                        y = vy,
                         z = feed_dir.z * 1.4,
                     })
                 end
@@ -1280,37 +1299,36 @@ local function eject_crushed_outputs(master_pos, partner_pos, seam_pos, feed_dir
     end
 end
 
+-- Directional intake zone matching `feed_dir`: items are pulled in from the upstream side (-feed_dir)
 local function is_in_intake_zone(ipos, master_pos, partner_pos, seam_pos, axis, feed_dir)
-    if axis.y ~= 0 then
-        if math.abs(ipos.y - seam_pos.y) > 1.10 then
-            return false
-        end
-        local rel_x = ipos.x - seam_pos.x
-        local rel_z = ipos.z - seam_pos.z
-        if hypot2(rel_x, rel_z) > 1.55 then
-            return false
-        end
-        local along = rel_x * feed_dir.x + rel_z * feed_dir.z
-        return (along <= 0.65)
-    else
-        if ipos.y < seam_pos.y - 0.95 or ipos.y > seam_pos.y + 2.10 then
-            return false
-        end
+    local rel_x = ipos.x - seam_pos.x
+    local rel_y = ipos.y - seam_pos.y
+    local rel_z = ipos.z - seam_pos.z
+
+    local along = rel_x * feed_dir.x + rel_y * feed_dir.y + rel_z * feed_dir.z
+    if along < -2.10 or along > 0.55 then
+        return false
+    end
+
+    if feed_dir.y ~= 0 then
         local d1 = hypot2(ipos.x - master_pos.x,  ipos.z - master_pos.z)
         local d2 = hypot2(ipos.x - partner_pos.x, ipos.z - partner_pos.z)
-        local ds = hypot2(ipos.x - seam_pos.x,    ipos.z - seam_pos.z)
+        local ds = hypot2(rel_x, rel_z)
         return (d1 <= 1.45 or d2 <= 1.45 or ds <= 1.45)
+    else
+        return (math.abs(rel_y) <= 1.15 and hypot2(rel_x, rel_z) <= 1.65)
     end
 end
 
-local function pull_from_intake_inventories(seam_pos, master_pos, partner_pos, dist)
+local function pull_from_intake_inventories(seam_pos, master_pos, partner_pos, dist, feed_dir)
     local candidates = {}
     if dist == 2 then
         candidates[#candidates + 1] = vector.round(seam_pos)
     end
-    candidates[#candidates + 1] = vector.round({x = seam_pos.x, y = seam_pos.y + 1, z = seam_pos.z})
-    candidates[#candidates + 1] = {x = master_pos.x,  y = master_pos.y + 1,  z = master_pos.z}
-    candidates[#candidates + 1] = {x = partner_pos.x, y = partner_pos.y + 1, z = partner_pos.z}
+    local in_off = {x = -feed_dir.x, y = -feed_dir.y, z = -feed_dir.z}
+    candidates[#candidates + 1] = vector.round({x = seam_pos.x + in_off.x, y = seam_pos.y + in_off.y, z = seam_pos.z + in_off.z})
+    candidates[#candidates + 1] = {x = master_pos.x  + in_off.x, y = master_pos.y  + in_off.y, z = master_pos.z  + in_off.z}
+    candidates[#candidates + 1] = {x = partner_pos.x + in_off.x, y = partner_pos.y + in_off.y, z = partner_pos.z + in_off.z}
 
     for _, cpos in ipairs(candidates) do
         local cnode = core.get_node(cpos)
@@ -1326,7 +1344,7 @@ local function pull_from_intake_inventories(seam_pos, master_pos, partner_pos, d
                     for slot = 1, sz do
                         local st = cinv:get_stack(lname, slot)
                         if not st:is_empty() and get_crushing_recipe_for_item(st:get_name(), st) then
-                            local spawned = core.add_item({x = seam_pos.x, y = seam_pos.y + 0.30, z = seam_pos.z}, st)
+                            local spawned = core.add_item({x = seam_pos.x, y = seam_pos.y + 0.15, z = seam_pos.z}, st)
                             if spawned then
                                 cinv:set_stack(lname, slot, ItemStack(""))
                                 local dt = core.get_node_timer(cpos)
@@ -1350,7 +1368,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
     local pair_hash   = core.hash_node_position(master_pos)
 
     if CONFIG.DEAL_CRUSH_DAMAGE then
-        local dmg_tick = (meta:get_int("dmg_tick") + 1) % 8
+        local dmg_tick = (meta:get_int("dmg_tick") + 1) % 5
         meta:set_int("dmg_tick", dmg_tick)
         if dmg_tick == 0 then
             local rpm_ratio = math.min(1.0, math.max(0.0, (eff_rpm - CONFIG.MIN_RPM) / (256 - CONFIG.MIN_RPM)))
@@ -1367,7 +1385,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
         end
     end
 
-    pull_from_intake_inventories(seam_pos, master_pos, partner_pos, pair.dist)
+    pull_from_intake_inventories(seam_pos, master_pos, partner_pos, pair.dist, feed_dir)
 
     local target_obj    = nil
     local target_ent    = nil
@@ -1414,7 +1432,7 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                     local step = math.min(dist_horiz, CONFIG.DRAG_PULL_SPEED * CONFIG.TIMER_INTERVAL)
                     local nx   = ipos.x + (dx / dist_horiz) * step
                     local nz   = ipos.z + (dz / dist_horiz) * step
-                    local ny   = math.max(hold_y, ipos.y - 0.10)
+                    local ny   = ipos.y + (hold_y - ipos.y) * 0.45
                     obj:set_pos({x = nx, y = ny, z = nz})
                 else
                     obj:set_pos({
@@ -1447,9 +1465,9 @@ local function process_pair_crushing(master_pos, meta, axis, pair)
                     -- Non-crushable item reached the seam: pass it cleanly through the wheels
                     ent._kinetica_vacuumed = false
                     obj:set_acceleration({x = 0, y = -9.81, z = 0})
-                    local leftover  = st
-                    local below_pos = vector.round({x = seam_pos.x + feed_dir.x, y = seam_pos.y + feed_dir.y, z = seam_pos.z + feed_dir.z})
-                    leftover = try_insert_into_container_or_depot(below_pos, leftover)
+                    local leftover = st
+                    local out_pos  = vector.round({x = seam_pos.x + feed_dir.x, y = seam_pos.y + feed_dir.y, z = seam_pos.z + feed_dir.z})
+                    leftover = try_insert_into_container_or_depot(out_pos, leftover)
                     if leftover:is_empty() then
                         obj:remove()
                     else
@@ -1631,19 +1649,17 @@ local function wheel_timer(pos, elapsed)
             local sound_timer = meta:get_float("wheel_sound_timer") + CONFIG.TIMER_INTERVAL
             if sound_timer >= CONFIG.SOUND_WHEEL_INTERVAL_SEC then
                 core.sound_play(CONFIG.SOUND_WHEEL_CUSTOM, {
-                    pos = pos,
+                    pos               = pos,
                     max_hear_distance = CONFIG.SOUND_WHEEL_MAX_DISTANCE,
-                    gain = CONFIG.SOUND_WHEEL_GAIN
+                    gain              = CONFIG.SOUND_WHEEL_GAIN,
                 }, true)
                 sound_timer = 0
             end
             meta:set_float("wheel_sound_timer", sound_timer)
         else
-            
             meta:set_float("wheel_sound_timer", CONFIG.SOUND_WHEEL_INTERVAL_SEC)
         end
     end
-
 
     local speed_rad = 0
     if is_active then
@@ -1737,26 +1753,33 @@ local function on_wheel_rightclick(pos, node, clicker, itemstack, pointed_thing)
     return itemstack
 end
 
+local in_wake_nearby = false
 local function wake_nearby_wheels(pos)
+    if in_wake_nearby then return end
+    in_wake_nearby = true
     for dx = -2, 2 do
-        for dy = -2, 2 do
+        for dy = -1, 1 do
             for dz = -2, 2 do
-                local npos = {x = pos.x + dx, y = pos.y + dy, z = pos.z + dz}
-                if kinetica.is_crushing_wheel(core.get_node(npos).name) then
-                    local t = core.get_node_timer(npos)
-                    t:start(CONFIG.TIMER_INTERVAL)
+                if dx ~= 0 or dy ~= 0 or dz ~= 0 then
+                    local npos = {x = pos.x + dx, y = pos.y + dy, z = pos.z + dz}
+                    if kinetica.is_crushing_wheel(core.get_node(npos).name) then
+                        local t = core.get_node_timer(npos)
+                        if not t:is_started() then
+                            t:start(CONFIG.TIMER_INTERVAL)
+                        end
+                    end
                 end
             end
         end
     end
+    in_wake_nearby = false
 end
 
 core.register_node(IDLE_NAME, {
     description = "Mechanical Crushing Wheel\n" ..
-                  "Place 2 wheels side-by-side (or straddling a Belt) to crush up to 64 items at once.\n" ..
+                  "Place 2 wheels side-by-side (or straddling a Belt) and spin them in OPPOSITE directions to crush up to 64 items at once.\n" ..
                   "• Crushes Ores, Raw Ores & Storage Blocks into bonus yields + Experience Orbs!\n" ..
-                  "• Upright: Drop items on top of either wheel — they drag to the center & crush!\n" ..
-                  "• Flat (look down to place): Feed from the single inward-spinning angle.",
+                  "• Intake & Output direction automatically matches the rotation direction of the wheels!",
     drawtype              = "nodebox",
     paramtype             = "light",
     paramtype2            = "facedir",
@@ -1886,7 +1909,6 @@ if kinetica.register_kinetic_machine then
             meta:set_string("crushing_item", "")
             meta:set_int("crush_pct", 0)
             meta:set_string("glasses_info", format_crushing_wheel_glasses_info(pos, node))
-            wake_nearby_wheels(pos)
         end,
         wake            = function(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
             local meta = core.get_meta(pos)
@@ -1901,10 +1923,8 @@ if kinetica.register_kinetic_machine then
             if not timer:is_started() then
                 timer:start(CONFIG.TIMER_INTERVAL)
             end
-            wake_nearby_wheels(pos)
         end,
     }
-    -- Register BOTH the idle and active swapped node names with the kinetic network
     kinetica.register_kinetic_machine(IDLE_NAME, machine_def)
     kinetica.register_kinetic_machine(ACTIVE_NAME, machine_def)
 end
@@ -1918,7 +1938,9 @@ core.register_lbm({
         local axis = kinetica.get_crushing_wheel_axis(node.param2)
         sync_crushing_wheel_entity(pos, axis, 0, CONFIG.WHEEL_SCALE_BELT_GAP)
         local timer = core.get_node_timer(pos)
-        timer:start(CONFIG.TIMER_INTERVAL)
+        if not timer:is_started() then
+            timer:start(CONFIG.TIMER_INTERVAL)
+        end
     end,
 })
 

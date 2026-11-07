@@ -13,7 +13,7 @@ local SOUND_CONFIG = {
     SOUND_GAIN         = 0.45,                       -- Volume (0.0 to 1.0)
     SOUND_PITCH        = 1.00,                       -- Base playback pitch
     PITCH_JITTER       = 0.08,                       -- Slight random pitch variation (+/-)
-    SOUND_INTERVAL     = 0.03,                       -- Seconds between sound triggers while active
+    SOUND_INTERVAL     = 26.0,                       -- Seconds between sound triggers while active
     MAX_HEAR_DISTANCE  = 16,                         -- Max distance (blocks) players can hear it
 }
 

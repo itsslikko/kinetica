@@ -16,7 +16,7 @@ local SOUND_CONFIG = {
     SCALE_PITCH_WITH_RPM    = true,                 -- Scale pitch dynamically with shaft RPM
     MIN_PITCH               = 0.70,                 -- Pitch at MIN_RPM (32 RPM)
     MAX_PITCH               = 1.40,                 -- Pitch at 512+ RPM
-    SOUND_INTERVAL          = 0.01,                 -- Seconds between sound triggers while active
+    SOUND_INTERVAL          = 34.0,                 -- Seconds between sound triggers while active
     MAX_HEAR_DISTANCE       = 12,                   -- Max distance (blocks) players can hear it
     SOUND_ONLY_WHEN_CUTTING = false,                -- true = only play when cutting a target; false = play whenever spinning
     ENABLE_CUT_FINISH_SOUND = true,                 -- Play a chop sound when a block/tree finishes cutting
@@ -384,7 +384,7 @@ local function harvest_and_drop_node(target_pos, drop_pos, owner)
         return false
     end
 
-    local drops = core.get_node_drops(node, "mcl_core:axe_diamond")
+    local drops = core.get_node_drops(node, "mcl_tools:axe_diamond")
     core.remove_node(target_pos)
     core.check_for_falling(target_pos)
 

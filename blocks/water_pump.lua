@@ -15,7 +15,7 @@ local SOUND_CONFIG = {
     SCALE_PITCH_WITH_RPM    = true,                     -- Scale pitch dynamically with shaft RPM
     MIN_PITCH               = 0.75,                     -- Pitch at MIN_PUMP_RPM (4 RPM)
     MAX_PITCH               = 1.35,                     -- Pitch at 512+ RPM
-    SOUND_INTERVAL          = 0.0,                     -- Seconds between sound triggers while active
+    SOUND_INTERVAL          = 23.0,                     -- Seconds between sound triggers while active
     MAX_HEAR_DISTANCE       = 12,                       -- Max distance (blocks) players can hear it
     SOUND_ONLY_WHEN_PUMPING = false,                    -- true = only play when water is below; false = play whenever spinning
 }

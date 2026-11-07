@@ -40,8 +40,9 @@ if reverse_order then
         },
     }
     end
-
+    dofile(modpath .. "/blocks/materials.lua")
     dofile(modpath .. "/blocks/shaft.lua")
+    dofile(modpath .. "/blocks/gearshift.lua")
     dofile(modpath .. "/blocks/steam_generator.lua")
     dofile(modpath .. "/blocks/fluid_pipe.lua")
     dofile(modpath .. "/blocks/water_pump.lua")
@@ -60,9 +61,9 @@ if reverse_order then
     dofile(modpath .. "/blocks/glasses.lua")
     dofile(modpath .. "/blocks/mechanical_drill.lua")
     dofile(modpath .. "/blocks/crushing_wheel.lua")
-    dofile(modpath .. "/blocks/materials.lua")
     dofile(modpath .. "/blocks/mechanical_press.lua")
     dofile(modpath .. "/blocks/funnel.lua")
     dofile(modpath .. "/blocks/glue.lua")
     dofile(modpath .. "/blocks/portable_interface.lua")
     dofile(modpath .. "/blocks/vault.lua")
+    dofile(modpath .. "/blocks/deployer.lua")

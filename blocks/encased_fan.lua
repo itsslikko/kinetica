@@ -15,7 +15,7 @@ local SOUND_CONFIG = {
     SCALE_PITCH_WITH_RPM = true,                   -- Scale pitch dynamically with shaft RPM
     MIN_PITCH            = 0.70,                   -- Pitch at MIN_RPM (16 RPM)
     MAX_PITCH            = 1.40,                   -- Pitch at 512+ RPM
-    SOUND_INTERVAL       = 0.01,                   -- Seconds between sound triggers while active
+    SOUND_INTERVAL       = 34.0,                   -- Seconds between sound triggers while active
     MAX_HEAR_DISTANCE    = 14,                     -- Max distance (blocks) players can hear it
 }
 

@@ -1786,6 +1786,6 @@ core.register_craft({
     recipe = {
         {"mcl_core:gold_ingot", "mcl_core:diamond",                 "mcl_core:gold_ingot"},
         {"kinetica:gearbox",    TIER1_BASE,                         "kinetica:gearbox"},
-        {"mcl_core:gold_ingot", "mcl_redstone_torch:redstoneblock", "mcl_core:gold_ingot"},
+        {"mcl_core:gold_ingot", "mcl_redstone:redstone_block", "mcl_core:gold_ingot"},
     },
 })

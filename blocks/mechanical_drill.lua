@@ -3,11 +3,11 @@ kinetica = kinetica or {}
 local modname = core.get_current_modname() or "kinetica"
 local modpath = core.get_modpath(modname) or ""
 
-
+-- ============================================================================
+-- TOP CONFIGURATION SECTION
+-- ============================================================================
 local BORE_SPIN_TUNING = {
-
     LOCAL_SPIN_AXIS = "y",
-
     INVERT_SPIN_DIR = false,
     DIR_OFFSET_DEG = {
         UP    = {x = 0, y = 0, z = 0},
@@ -18,7 +18,6 @@ local BORE_SPIN_TUNING = {
         WEST  = {x = 0, y = 0, z = 0},
     },
 }
-
 
 local SOUND_CONFIG = {
     ENABLE_SOUND                   = true,
@@ -31,7 +30,7 @@ local SOUND_CONFIG = {
     SCALE_PITCH_WITH_RPM           = true,                 -- Scale pitch dynamically with shaft RPM
     MIN_PITCH                      = 0.75,                 -- Pitch at MIN_RPM (16 RPM)
     MAX_PITCH                      = 1.35,                 -- Pitch at 512+ RPM
-    SOUND_INTERVAL                 = 0.80,                 -- Seconds between sound triggers while active
+    SOUND_INTERVAL                 = 27.0,                 -- Safe interval between sound triggers while active
     MAX_HEAR_DISTANCE              = 12,                   -- Max distance (blocks) players can hear it
     SOUND_ONLY_WHEN_DRILLING_BLOCK = false,                -- true = only play when mining a block; false = play whenever spinning
 }
@@ -54,7 +53,7 @@ local CONFIG = {
         { name = "hyper",  max_rpm = 1024, shaft_len = 0.05, drill_len = 0.05 },
         { name = "ultra",  max_rpm = 3072, shaft_len = 0.03, drill_len = 0.03 },
     },
-    TICK_INTERVAL                   = 0.20,
+    TICK_INTERVAL                   = 0.25,
     BASE_TIME_AT_MIN_RPM            = 1.20,
     BASE_TIME_AT_512_RPM            = 0.20,
     SCALE_TIME_BY_HARDNESS          = true,
@@ -64,7 +63,7 @@ local CONFIG = {
     ENABLE_STACKED_STORAGE_MODE     = true,
     DEFAULT_STORAGE_MODE_ON         = true,
     SYNC_TOGGLE_ACROSS_STACK        = true,
-    MAX_STACKED_DRILLS_SEARCH       = 64,
+    MAX_STACKED_DRILLS_SEARCH       = 32,
     COBBLE_GEN_SPEED_BOOST          = true,
     SPAWN_DRILL_SPARKS              = true,
     DEAL_ENTITY_DAMAGE              = true,
@@ -104,6 +103,9 @@ local ACT_CCW         = "kinetica:mechanical_drill_active_ccw"
 local BIT_MESH_NODE   = "kinetica:mechanical_drill_bit_mesh"
 local BIT_ENTITY_NAME = "kinetica:mechanical_drill_bit"
 local INV_MESH_NODE   = "kinetica:mechanical_drill_inv_mesh"
+
+-- Fast O(1) cache for drill bit entities so we don't scan objects every 0.25s
+local active_bit_entities = {}
 
 local function is_drill_node(name)
     if not name then return false end
@@ -149,7 +151,7 @@ local function play_drill_active_sound(pos, meta, rpm, can_drill, dt)
     end
 
     local sound_timer = meta:get_float("drill_sound_timer") + (dt or CONFIG.TICK_INTERVAL)
-    if sound_timer < (SOUND_CONFIG.SOUND_INTERVAL or 0.80) then
+    if sound_timer < (SOUND_CONFIG.SOUND_INTERVAL or 1.50) then
         meta:set_float("drill_sound_timer", sound_timer)
         return
     end
@@ -290,9 +292,6 @@ local bit_saw_frame = TEX_SAW .. "^[sheet:1x3:0,0"
 local bit_flute_tex = "(" .. CONFIG.TEX_FALLBACK_COLLAR .. ")^(" .. bit_saw_frame .. ")"
 local bit_top_tex   = "(" .. CONFIG.TEX_FALLBACK_COLLAR .. ")^(" .. bit_saw_frame .. ")"
 
--- Split Side Texture for the 3D Inventory/Wield Nodebox:
---   Top 8 pixels (y = 0..7, which maps to nodebox Y = 0..+8/16): Stonecutter Bore Texture
---   Bottom 8 pixels (y = 8..15, which maps to nodebox Y = -8/16..0): Drill Casing Side Texture
 local esc_saw_frame = TEX_SAW .. "\\^[sheet\\:1x3\\:0,0"
 local split_side_idle_tex = "[combine:16x16" ..
     ":0,0="  .. CONFIG.TEX_FALLBACK_COLLAR ..
@@ -319,8 +318,6 @@ core.register_node(BIT_MESH_NODE, {
 
 -- ============================================================================
 -- EXACT 3D ROTATION MATRIX -> LUANTI EULER DECOMPOSITION
--- Multiplies R_total = R_align(drill_dir) * R_local_spin(angle) so the bore
--- ALWAYS spins around its own pointed +Y tip axis before aiming in drill_dir.
 -- ============================================================================
 local function mat3_mul(A, B)
     return {
@@ -369,7 +366,6 @@ local function local_spin_matrix(angle)
             { 0,  0, 1},
         }
     else
-        -- Default "y": spin around the bore's +Y center shaft axis
         return {
             { c, 0,  s},
             { 0, 1,  0},
@@ -378,45 +374,38 @@ local function local_spin_matrix(angle)
     end
 end
 
--- Alignment matrix whose 2nd column (the local +Y tip of the drill bit) equals drill_dir
 local function dir_align_matrix(drill_dir)
     if drill_dir.y > 0 then
-        -- UP (+Y)
         return {
             {1, 0, 0},
             {0, 1, 0},
             {0, 0, 1},
         }, "UP"
     elseif drill_dir.y < 0 then
-        -- DOWN (-Y)
         return {
             { 1,  0,  0},
             { 0, -1,  0},
             { 0,  0, -1},
         }, "DOWN"
     elseif drill_dir.z > 0 then
-        -- NORTH (+Z): maps local +Y -> +Z, local +Z -> -Y, local +X -> +X
         return {
             {1,  0,  0},
             {0,  0, -1},
             {0,  1,  0},
         }, "NORTH"
     elseif drill_dir.z < 0 then
-        -- SOUTH (-Z): maps local +Y -> -Z, local +Z -> +Y, local +X -> +X
         return {
             {1,  0, 0},
             {0,  0, 1},
             {0, -1, 0},
         }, "SOUTH"
     elseif drill_dir.x > 0 then
-        -- EAST (+X): maps local +Y -> +X, local +X -> -Y, local +Z -> +Z
         return {
             { 0, 1, 0},
             {-1, 0, 0},
             { 0, 0, 1},
         }, "EAST"
     else
-        -- WEST (-X): maps local +Y -> -X, local +X -> +Y, local +Z -> +Z
         return {
             {0, -1, 0},
             {1,  0, 0},
@@ -425,12 +414,6 @@ local function dir_align_matrix(drill_dir)
     end
 end
 
--- Decompose 3x3 orthogonal matrix into Luanti's exact entity Euler angles {x, y, z}.
--- Luanti's setPitchYawRollRad applies First Roll (Z), then Pitch (X), then Yaw (Y)
--- in right-handed sense within Luanti's (X=East, Y=Up, Z=North) axes:
---   R[1] = {  cy*cz + sy*sx*sz,   cy*sz - sy*sx*cz,  -sy*cx }
---   R[2] = { -cx*sz,              cx*cz,             -sx    }
---   R[3] = {  sy*cz - cy*sx*sz,   sy*sz + cy*sx*cz,   cy*cx }
 local function mat3_to_luanti_euler(R)
     local sx = math.max(-1.0, math.min(1.0, -R[2][3]))
     local x  = math.asin(sx)
@@ -471,11 +454,11 @@ core.register_entity(BIT_ENTITY_NAME, {
         visual               = "wielditem",
         wield_item           = BIT_MESH_NODE,
         visual_size          = {x = 0.6667, y = 0.6667, z = 0.6667},
-        static_save          = true,
+        static_save          = false,
         shaded               = true,
     },
 
-    on_activate = function(self, staticdata)
+    on_activate = function(self)
         self.object:set_armor_groups({immortal = 1})
         self.angle      = 0
         self.speed      = 0
@@ -487,13 +470,13 @@ core.register_entity(BIT_ENTITY_NAME, {
             local bpos = vector.round(pos)
             local node = core.get_node(bpos)
             if is_drill_node(node.name) then
-                self.drill_dir = get_drill_dir(node.param2)
-                local meta     = core.get_meta(bpos)
-                local rpm      = meta:get_float("rpm")
-                local spin_dir = meta:get_int("spin_dir")
-                if node.name ~= IDLE_NAME and rpm >= CONFIG.MIN_RPM and spin_dir ~= 0 then
-                    self.speed = lerp(CONFIG.BASE_SPIN_RAD_PER_SEC, CONFIG.MAX_SPIN_RAD_PER_SEC, rpm_factor(rpm)) * spin_dir
+                local hk = core.hash_node_position(bpos)
+                if active_bit_entities[hk] and active_bit_entities[hk] ~= self.object then
+                    self.object:remove()
+                    return
                 end
+                active_bit_entities[hk] = self.object
+                self.drill_dir = get_drill_dir(node.param2)
                 self.object:set_rotation(compute_bit_euler(self.drill_dir, self.angle))
             else
                 self.object:remove()
@@ -503,10 +486,13 @@ core.register_entity(BIT_ENTITY_NAME, {
 
     on_step = function(self, dtime)
         self._check_acc = (self._check_acc or 0) + dtime
-        if self._check_acc >= 0.5 then
+        if self._check_acc >= 1.0 then
             self._check_acc = 0
             local pos = self.object:get_pos()
             if not pos or not is_drill_node(core.get_node(vector.round(pos)).name) then
+                if pos then
+                    active_bit_entities[core.hash_node_position(vector.round(pos))] = nil
+                end
                 self.object:remove()
                 return
             end
@@ -520,6 +506,12 @@ core.register_entity(BIT_ENTITY_NAME, {
 })
 
 local function remove_drill_bit_entity(pos)
+    local hk = core.hash_node_position(pos)
+    local cached = active_bit_entities[hk]
+    if cached then
+        cached:remove()
+        active_bit_entities[hk] = nil
+    end
     for _, obj in ipairs(core.get_objects_inside_radius(pos, 0.55)) do
         local le = obj:get_luaentity()
         if le and le.name == BIT_ENTITY_NAME then
@@ -529,34 +521,44 @@ local function remove_drill_bit_entity(pos)
 end
 
 local function sync_drill_bit_entity(pos, param2, rpm, spin_dir)
+    local hk        = core.hash_node_position(pos)
     local drill_dir = get_drill_dir(param2)
-    local bit_obj   = nil
+    local bit_obj   = active_bit_entities[hk]
 
-    for _, obj in ipairs(core.get_objects_inside_radius(pos, 0.45)) do
-        local le = obj:get_luaentity()
-        if le and le.name == BIT_ENTITY_NAME then
-            if not bit_obj then
-                bit_obj = obj
-            else
-                obj:remove()
+    if not (bit_obj and bit_obj:get_luaentity()) then
+        bit_obj = nil
+        for _, obj in ipairs(core.get_objects_inside_radius(pos, 0.45)) do
+            local le = obj:get_luaentity()
+            if le and le.name == BIT_ENTITY_NAME then
+                if not bit_obj then
+                    bit_obj = obj
+                else
+                    obj:remove()
+                end
             end
         end
-    end
-
-    if not bit_obj then
-        bit_obj = core.add_entity(pos, BIT_ENTITY_NAME)
+        if not bit_obj then
+            bit_obj = core.add_entity(pos, BIT_ENTITY_NAME)
+        end
+        active_bit_entities[hk] = bit_obj
     end
 
     if bit_obj then
         local le = bit_obj:get_luaentity()
         if le then
-            le.drill_dir = drill_dir
             local spd = 0
             if rpm and rpm >= CONFIG.MIN_RPM and spin_dir and spin_dir ~= 0 then
                 spd = lerp(CONFIG.BASE_SPIN_RAD_PER_SEC, CONFIG.MAX_SPIN_RAD_PER_SEC, rpm_factor(rpm)) * spin_dir
             end
-            le.speed = spd
-            bit_obj:set_rotation(compute_bit_euler(drill_dir, le.angle or 0))
+            local dir_changed = (not le.drill_dir) or
+                                (le.drill_dir.x ~= drill_dir.x or le.drill_dir.y ~= drill_dir.y or le.drill_dir.z ~= drill_dir.z)
+            local spd_changed = math.abs((le.speed or 0) - spd) > 0.01
+
+            le.drill_dir = drill_dir
+            le.speed     = spd
+            if dir_changed or (spd == 0 and spd_changed) then
+                bit_obj:set_rotation(compute_bit_euler(drill_dir, le.angle or 0))
+            end
         end
     end
 end
@@ -927,7 +929,7 @@ local function spawn_drilling_particles(target_pos, target_node, hardness)
     local tex  = (type(tile) == "table" and tile.name) or (type(tile) == "string" and tile) or CONFIG.TEX_FALLBACK_COLLAR
 
     core.add_particlespawner({
-        amount     = 6,
+        amount     = 4,
         time       = CONFIG.TICK_INTERVAL,
         minpos     = {x = target_pos.x - 0.28, y = target_pos.y - 0.28, z = target_pos.z - 0.28},
         maxpos     = {x = target_pos.x + 0.28, y = target_pos.y + 0.28, z = target_pos.z + 0.28},
@@ -942,7 +944,7 @@ local function spawn_drilling_particles(target_pos, target_node, hardness)
 
     if CONFIG.SPAWN_DRILL_SPARKS and (hardness >= 2.0 or is_ore_block(target_node.name)) then
         core.add_particlespawner({
-            amount     = 3,
+            amount     = 2,
             time       = CONFIG.TICK_INTERVAL,
             minpos     = {x = target_pos.x - 0.22, y = target_pos.y - 0.22, z = target_pos.z - 0.22},
             maxpos     = {x = target_pos.x + 0.22, y = target_pos.y + 0.22, z = target_pos.z + 0.22},
@@ -1239,6 +1241,7 @@ local function set_drill_idle(pos, node, reason_text)
     meta:set_string("glasses_info", format_drill_glasses_info(pos, core.get_node(pos)))
 end
 
+-- Fixed wake_drill: stores power & extends lit_until so drill_timer never triggers an infinite update_network loop!
 local function wake_drill(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
     node = node or core.get_node(pos)
     if rpm < CONFIG.MIN_RPM then
@@ -1250,6 +1253,15 @@ local function wake_drill(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_
     end
 
     if spin_dir == 0 then spin_dir = 1 end
+    local meta = core.get_meta(pos)
+    local now  = math.floor(core.get_gametime())
+    meta:set_float("rpm", rpm)
+    meta:set_int("spin_dir", spin_dir)
+    if avail_ku then meta:set_int("rotational_power", avail_ku) end
+    if supply_ku and supply_ku > 0 then meta:set_int("network_supply_ku", supply_ku) end
+    if demand_ku and demand_ku > 0 then meta:set_int("machine_demand_ku", demand_ku) end
+    meta:set_int("lit_until", math.max(meta:get_int("lit_until"), now + 4))
+
     local target_node = get_active_drill_node_name(rpm, spin_dir)
     if node.name ~= target_node then
         core.swap_node(pos, {name = target_node, param2 = node.param2})
@@ -1262,13 +1274,24 @@ local function wake_drill(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_
     end
 end
 
+local in_drill_net_check = false
+
 local function drill_timer(pos, elapsed)
     local now  = math.floor(core.get_gametime())
     local meta = core.get_meta(pos)
     local node = core.get_node(pos)
 
-    if now >= meta:get_int("lit_until") and kinetica.update_network then
-        kinetica.update_network(pos)
+    -- Guarded network refresh on back-port neighbor only when lease expires
+    if now >= meta:get_int("lit_until") and kinetica.update_network and not in_drill_net_check then
+        in_drill_net_check = true
+        local bdir = get_back_dir(node.param2)
+        local bpos = {x = pos.x + bdir.x, y = pos.y + bdir.y, z = pos.z + bdir.z}
+        if kinetica.is_kinetic_node and kinetica.is_kinetic_node(core.get_node(bpos).name) then
+            kinetica.update_network(bpos)
+        else
+            kinetica.update_network(pos)
+        end
+        in_drill_net_check = false
         node = core.get_node(pos)
     end
 
@@ -1411,8 +1434,6 @@ if kinetica.register_kinetic_machine then
     })
 end
 
--- World placed nodes use the half-casing base (and BIT_ENTITY_NAME renders the bore);
--- Inventory/Hand item uses the full 3D nodebox with split UV textures so the bore has the exact stonecutter saw texture!
 local full_3d_drill_boxes = {
     {-8/16, -8/16, -8/16, 8/16, 0/16, 8/16},
 }
@@ -1507,8 +1528,6 @@ local function register_drill_variant(node_name, top_tile, back_tile, side_tile_
             and string.format("Mechanical Drill (Min %d RPM | 1x1 Rotary Miner | Stacked Drills Share Chest Storage)", CONFIG.MIN_RPM)
             or  "Mechanical Drill",
         drawtype = "nodebox",
-        -- Base node uses the full 3D drill nodebox with split-UV textures so Inventory & Wield hand
-        -- display the stonecutter saw bore on top and the casing on the bottom!
         node_box = is_base and drill_full_3d_nodebox or drill_base_nodebox,
         collision_box = drill_collision_box,
         selection_box = drill_selection_box,

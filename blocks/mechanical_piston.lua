@@ -1,6 +1,7 @@
 kinetica = kinetica or {}
 
 local CONFIG = {
+    FRONT_FACES_PLAYER            = true,
     MIN_RPM                       = 8,
     BASE_KU_PER_RPM               = 2,
     MIN_BASE_KU                   = 16,
@@ -204,6 +205,10 @@ local function is_piston_pole_node(name)
 end
 kinetica.is_piston_pole = is_piston_pole_node
 
+function kinetica.is_piston_pole_or_head(name)
+    return is_piston_pole_node(name) or is_piston_head_node(name)
+end
+
 local function is_sticky_contraption_frame(name)
     if not name or name == "air" then return false end
     if string.find(name, "slime") or string.find(name, "honey_block") then
@@ -228,10 +233,17 @@ local function get_push_dir(param2)
     local d = AXIS_TO_PUSH_DIR[axisdir] or AXIS_TO_PUSH_DIR[0]
     return {x = d.x, y = d.y, z = d.z}
 end
+kinetica.get_piston_push_dir = get_push_dir
 
 local function get_back_dir(param2)
     local d = get_push_dir(param2)
     return {x = -d.x, y = -d.y, z = -d.z}
+end
+
+-- Exported for shaft.lua so the network solver checks the 4 side ports perpendicular to push_dir!
+function kinetica.piston_has_axle_port(node, d)
+    local push_dir = get_push_dir(node.param2)
+    return (d.x * push_dir.x + d.y * push_dir.y + d.z * push_dir.z) == 0
 end
 
 local function is_same_axis(param2_a, param2_b)
@@ -583,13 +595,14 @@ local function find_registered_machine_def(node_name)
     end
     for prefix, mdef in pairs(kinetica.registered_machines) do
         if node_name == prefix or string.sub(node_name, 1, #prefix + 1) == (prefix .. "_") then
-            return mdef
+            if #prefix > 0 then
+                return mdef
+            end
         end
     end
     return nil
 end
 
--- Gathers all blocks & machines attached to the piston (via front contact, Super Glue, Slime/Honey, or secondary pistons).
 local function collect_attached_contraption(piston_pos, piston_node)
     piston_node = piston_node or raw_get_node(piston_pos)
     local own_parts  = get_piston_assembly_positions(piston_pos, piston_node)
@@ -673,20 +686,17 @@ local function collect_attached_contraption(piston_pos, piston_node)
         local cnode = raw_get_node(cur)
         local cnam  = cnode.name
 
-        -- 1. Pull in all blocks sharing a Super Glue cluster with `cur`
         if kinetica.get_glued_cluster_positions then
             for _, gpos in ipairs(kinetica.get_glued_cluster_positions(cur)) do
                 try_add_with_piston_assembly(gpos)
             end
         end
 
-        -- 2. If `cur` is a secondary piston head, include the block touching its front plate
         if is_piston_head_node(cnam) then
             local h_push = get_push_dir(cnode.param2)
             try_add_with_piston_assembly({x = cur.x + h_push.x, y = cur.y + h_push.y, z = cur.z + h_push.z})
         end
 
-        -- 3. Check 6 neighbors for Slime/Honey frames or attached riding machines/controllers
         local cur_is_sticky = is_sticky_contraption_frame(cnam)
         local cur_is_piston = is_mechanical_piston(cnam)
 
@@ -722,7 +732,6 @@ local function collect_attached_contraption(piston_pos, piston_node)
     return cluster
 end
 
--- Gathers blocks to physically shift 1 block during an extension or retraction step
 local function collect_contraption_blocks(piston_pos, anchor_pos, move_dir, is_pulling, is_sticky, owner)
     local piston_node = raw_get_node(piston_pos)
     local own_parts   = get_piston_assembly_positions(piston_pos, piston_node)
@@ -899,7 +908,7 @@ local function collect_contraption_blocks(piston_pos, anchor_pos, move_dir, is_p
 end
 
 -- =========================================================
--- CONTRAPTION KU DEMAND CALCULATOR (WITH ANTI-RECURSION GUARD)
+-- CONTRAPTION KU DEMAND CALCULATOR
 -- =========================================================
 local function get_own_piston_base_and_pole_ku(rpm, pos, node)
     local base_ku = CONFIG.MIN_BASE_KU
@@ -982,10 +991,9 @@ local function get_piston_demand_ku(rpm, pos, node)
 end
 kinetica.get_piston_demand_ku = get_piston_demand_ku
 
-local set_piston_idle -- forward declaration
-local wake_piston     -- forward declaration
+local set_piston_idle
+local wake_piston
 
--- Powers riding machines & secondary pistons without ever overwriting a parent network-driven piston!
 local function power_and_check_contraption_machines(piston_pos, cluster, move_dir, rpm, spin_dir, avail_ku, supply_ku)
     local now         = math.floor(core.get_gametime())
     local should_wait = false
@@ -1003,7 +1011,6 @@ local function power_and_check_contraption_machines(piston_pos, cluster, move_di
         local bnode = raw_get_node(bpos)
         local bhash = core.hash_node_position(bpos)
 
-        -- 1. Secondary Mechanical Piston riding on the contraption
         if is_mechanical_piston(bnode.name) and bhash ~= parent_hash and not waking_pistons[bhash] then
             local bmeta = core.get_meta(bpos)
             local is_direct_network_piston = (bmeta:get_int("lit_until") > now) and
@@ -1047,7 +1054,6 @@ local function power_and_check_contraption_machines(piston_pos, cluster, move_di
                 end
             end
 
-        -- 2. Other riding machines (Drills, Saws, etc.)
         elseif not is_mechanical_piston(bnode.name) then
             local mdef = find_registered_machine_def(bnode.name)
             if mdef and mdef.can_ride_piston then
@@ -1085,7 +1091,6 @@ local function power_and_check_contraption_machines(piston_pos, cluster, move_di
     return should_wait, wait_reason
 end
 
--- Shuts down attached contraption machines safely with `idling_pistons` recursion protection!
 local function idle_attached_contraption_machines(piston_pos, piston_node)
     local cluster = collect_attached_contraption(piston_pos, piston_node)
     for _, bpos in ipairs(cluster) do
@@ -1519,6 +1524,7 @@ set_piston_idle = function(pos, node, reason_text)
 
     idling_pistons[hk] = nil
 end
+kinetica.set_piston_idle = set_piston_idle
 
 wake_piston = function(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
     local hk = core.hash_node_position(pos)
@@ -1564,6 +1570,7 @@ wake_piston = function(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
 
     waking_pistons[hk] = nil
 end
+kinetica.wake_mechanical_piston = wake_piston
 
 local function piston_timer(pos, elapsed)
     local now  = math.floor(core.get_gametime())
@@ -1756,13 +1763,25 @@ local function try_append_pole_behind_piston(piston_pos, piston_node, player, it
     return true
 end
 
+-- Restored original dir_to_piston_param2 placement so the piston faces you (or away when sneaking) in all 6 directions!
 local function place_mechanical_piston(itemstack, placer, pointed_thing)
     if not pointed_thing or pointed_thing.type ~= "node" then
         return itemstack
     end
-    local sneaking = placer and placer:is_player() and placer:get_player_control().sneak
-    local ldir     = look_to_unit_dir(placer)
-    local push_dir = sneaking and ldir or {x = -ldir.x, y = -ldir.y, z = -ldir.z}
+
+    local under_pos  = pointed_thing.under
+    local under_node = raw_get_node(under_pos)
+    local under_def  = core.registered_nodes[under_node.name]
+    local sneaking   = placer and placer:is_player() and placer:get_player_control().sneak
+
+    if under_def and under_def.on_rightclick and not sneaking and not is_mechanical_piston(under_node.name) then
+        return under_def.on_rightclick(under_pos, under_node, placer, itemstack, pointed_thing) or itemstack
+    end
+
+    local ldir   = look_to_unit_dir(placer)
+    local invert = CONFIG.FRONT_FACES_PLAYER
+    if sneaking then invert = not invert end
+    local push_dir = invert and {x = -ldir.x, y = -ldir.y, z = -ldir.z} or ldir
     local param2   = dir_to_piston_param2(push_dir)
 
     local placed_stack, place_pos = core.item_place_node(itemstack, placer, pointed_thing, param2)
@@ -1917,8 +1936,8 @@ core.register_node(POLE_NAME, {
 
 core.register_alias("kinetica:piston_extension_pole", POLE_NAME)
 
-local base_groups   = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, kinetica_piston = 1}
-local active_groups = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, kinetica_piston = 1, not_in_creative_inventory = 1}
+local base_groups   = {handy = 1, pickaxey = 1, axey = 1, container = 2, kinetic_receiver = 1, kinetica_piston = 1}
+local active_groups = {handy = 1, pickaxey = 1, axey = 1, container = 2, kinetic_receiver = 1, kinetica_piston = 1, not_in_creative_inventory = 1}
 
 local function register_piston_variant(node_name, base_name, desc, front_tex, side_tile_a, side_tile_b, nbox, is_base)
     core.register_node(node_name, {
@@ -1933,12 +1952,12 @@ local function register_piston_variant(node_name, base_name, desc, front_tex, si
         is_ground_content     = false,
         drop                  = is_base and nil or base_name,
         tiles = {
-            front_tex,            -- +Y local: Front pushing face / throat
-            BACK_POLE_SOCKET_TEX, -- -Y local: Back pole socket (NO shaft overlay!)
-            side_tile_a,          -- +X local: Static Andesite casing + spinning shaft overlay
-            side_tile_b,          -- -X local: Static Andesite casing + spinning shaft overlay
-            side_tile_a,          -- +Z local: Static Andesite casing + spinning shaft overlay
-            side_tile_b,          -- -Z local: Static Andesite casing + spinning shaft overlay
+            front_tex,
+            BACK_POLE_SOCKET_TEX,
+            side_tile_a,
+            side_tile_b,
+            side_tile_a,
+            side_tile_b,
         },
         groups                = is_base and base_groups or active_groups,
         _mcl_hardness         = 2.5,

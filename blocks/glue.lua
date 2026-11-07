@@ -433,7 +433,7 @@ core.register_entity(GLUE_ENTITY_NAME, {
     on_activate = function(self, staticdata)
         self.object:set_armor_groups({immortal = 1})
         self._vis_timer   = 0
-        self._empty_Check = 0
+        self._empty_check = 0
 
         if staticdata and staticdata ~= "" then
             local data = core.deserialize(staticdata)
@@ -1076,7 +1076,7 @@ core.register_tool(GLUE_TOOL_NAME, {
 
 core.register_alias("kinetica:resin_glue", GLUE_TOOL_NAME)
 
-local sheet_item  = core.registered_items["kinetica:iron_sheet"]    and "kinetica:iron_sheet"    or "mcl_core:iron_ingot"
+local sheet_item  = core.registered_items["kinetica:sheet_iron"]    and "kinetica:sheet_iron"    or "mcl_core:iron_ingot"
 local slime_item  = core.registered_items["mcl_mobitems:slimeball"] and "mcl_mobitems:slimeball" or "default:mese_crystal_fragment"
 local nugget_item = core.registered_items["mcl_core:iron_nugget"]   and "mcl_core:iron_nugget"   or "default:steel_ingot"
 

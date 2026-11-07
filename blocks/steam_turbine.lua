@@ -13,7 +13,7 @@ local SOUND_CONFIG = {
     SCALE_PITCH_WITH_RPM    = true,                 -- Scale pitch dynamically with shaft RPM
     MIN_PITCH               = 0.65,                 -- Pitch at low RPM
     MAX_PITCH               = 1.15,                 -- Pitch at 512+ RPM
-    SOUND_INTERVAL          = 0.01,                 -- Seconds between sound triggers while active
+    SOUND_INTERVAL          = 30.0,                 -- Seconds between sound triggers while active
     MAX_HEAR_DISTANCE       = 12,                   -- Max distance (blocks) players can hear it
     SOUND_ONLY_SELF_POWERED = true,                 -- true = only play when fed steam; false = also play when spun passively by a shaft
 }

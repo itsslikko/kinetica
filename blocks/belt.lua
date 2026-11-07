@@ -1354,8 +1354,10 @@ local function notify_pulley_and_axle_neighbors(bpos, bnode)
     end
 end
 
+local in_set_belt_idle = false
+
 local function set_belt_idle(pos, node, reason_text)
-    if belt_relay_depth > 4 then return end
+    if belt_relay_depth > 2 or in_set_belt_idle then return end
     node = node or core.get_node(pos)
     local meta     = core.get_meta(pos)
     local span     = get_belt_span_positions(pos, meta)
@@ -1380,7 +1382,21 @@ local function set_belt_idle(pos, node, reason_text)
         end
     end
 
+    in_set_belt_idle = true
     active_belt_spans[span_key] = nil
+
+    -- Track ONLY pulleys that were actively acting as virtual relay sources before this call
+    local active_relay_pulleys = {}
+    for _, bpos in ipairs(span) do
+        local bnode = core.get_node(bpos)
+        if is_belt_node(bnode.name) then
+            local bmeta = core.get_meta(bpos)
+            if bmeta:get_int("has_shaft") == 1 and bmeta:get_int("source_active") == 1 then
+                active_relay_pulleys[#active_relay_pulleys + 1] = {pos = bpos, node = bnode}
+            end
+        end
+    end
+
     clear_belt_virtual_sources(span)
 
     for _, bpos in ipairs(span) do
@@ -1416,18 +1432,20 @@ local function set_belt_idle(pos, node, reason_text)
         end
     end
 
-    belt_relay_depth = belt_relay_depth + 1
-    for _, bpos in ipairs(span) do
-        local bnode = core.get_node(bpos)
-        if is_belt_node(bnode.name) and core.get_meta(bpos):get_int("has_shaft") == 1 then
-            for _, nb in ipairs(get_connected_axle_neighbors(bpos, bnode)) do
+    -- Only notify downstream neighbors if a relay pulley actually turned off AND we aren't already in a solver reason callback
+    if #active_relay_pulleys > 0 and not reason_text then
+        belt_relay_depth = belt_relay_depth + 1
+        for _, rp in ipairs(active_relay_pulleys) do
+            for _, nb in ipairs(get_connected_axle_neighbors(rp.pos, rp.node)) do
                 if kinetica.update_network then
                     kinetica.update_network(nb.pos)
                 end
             end
         end
+        belt_relay_depth = belt_relay_depth - 1
     end
-    belt_relay_depth = belt_relay_depth - 1
+
+    in_set_belt_idle = false
 end
 
 local function wake_belt(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)

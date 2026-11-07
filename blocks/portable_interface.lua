@@ -31,7 +31,7 @@ local CONFIG = {
         "vault", "chest", "barrel", "shulker", "crate", "hopper", "depot", "chute"
     },
     FLUID_SOURCE_NODES       = {
-        ["kinetica:fluid_pipe"]         = "pipe",
+        ["kinetica:steam_pipe"]         = "pipe",
         ["kinetica:water_pump"]         = "pipe",
         ["mcl_core:water_source"]       = "infinite",
         ["default:water_source"]        = "infinite",
@@ -931,7 +931,7 @@ core.register_craft({
 core.register_craft({
     output = FLUID_BASE,
     recipe = {
-        {"", "kinetica:fluid_pipe", ""},
+        {"", "kinetica:steam_pipe", ""},
         {"kinetica:andesite_alloy", "kinetica:andesite_casing", "kinetica:andesite_alloy"},
     },
 })

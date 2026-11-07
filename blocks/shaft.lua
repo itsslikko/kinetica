@@ -1,9 +1,13 @@
 kinetica = kinetica or {}
 
+-- ============================================================================
+-- TOP CONFIGURATION SECTION
+-- ============================================================================
 local CONFIG = {
     MAX_SHAFT_RUN                 = 32,
     MAX_WATER_WHEELS              = 10,
     GEARBOX_FINE_KU               = 1,
+    GEARSHIFT_FINE_KU             = 1,
     CHAIN_DRIVE_FINE_KU           = 1,
     MAX_NETWORK_NODES             = 512,
     WATCHDOG_SECONDS              = 2.0,
@@ -36,6 +40,7 @@ local CONFIG = {
 local MAX_SHAFT_RUN       = CONFIG.MAX_SHAFT_RUN
 local MAX_WATER_WHEELS    = CONFIG.MAX_WATER_WHEELS
 local GEARBOX_FINE_KU     = CONFIG.GEARBOX_FINE_KU
+local GEARSHIFT_FINE_KU   = CONFIG.GEARSHIFT_FINE_KU
 local CHAIN_DRIVE_FINE_KU = CONFIG.CHAIN_DRIVE_FINE_KU
 local PUMP_MIN_RPM        = CONFIG.PUMP_MIN_RPM
 local PUMP_KU_PER_RPM     = CONFIG.PUMP_KU_PER_RPM
@@ -53,6 +58,7 @@ local WATCHDOG_SECONDS    = CONFIG.WATCHDOG_SECONDS
 kinetica.MAX_SHAFT_RUN       = MAX_SHAFT_RUN
 kinetica.MAX_WATER_WHEELS    = MAX_WATER_WHEELS
 kinetica.GEARBOX_FINE_KU     = GEARBOX_FINE_KU
+kinetica.GEARSHIFT_FINE_KU   = kinetica.GEARSHIFT_FINE_KU or GEARSHIFT_FINE_KU
 kinetica.CHAIN_DRIVE_FINE_KU = CHAIN_DRIVE_FINE_KU
 kinetica.PUMP_MIN_RPM        = PUMP_MIN_RPM
 kinetica.MAX_PUMP_CHAIN      = MAX_PUMP_CHAIN
@@ -246,9 +252,15 @@ function kinetica.is_source_node(name, pos)
     return kinetica.is_water_wheel(name) or kinetica.is_turbine(name)
 end
 
+function kinetica.is_gearshift(name)
+    if not name then return false end
+    return name == "kinetica:gearshift" or string.sub(name, 1, 19) == "kinetica:gearshift_"
+end
+
 function kinetica.is_kinetic_node(name)
     return kinetica.is_shaft(name) or
            kinetica.is_gearbox(name) or
+           kinetica.is_gearshift(name) or
            kinetica.is_chain_drive(name) or
            kinetica.is_water_pump(name) or
            kinetica.is_mechanical_piston(name) or
@@ -314,9 +326,6 @@ local function format_shaft_glasses_info(pos, node)
     local now       = math.floor(core.get_gametime())
     local is_active = (node.name ~= IDLE_SHAFT) and (supply_ku > 0 and rpm > 0 and now < meta:get_int("lit_until"))
 
-    local ax = abs_axis(node.param2)
-    local axis_lbl = (ax.y ~= 0) and "Vertical (Y)" or ((ax.x ~= 0) and "East-West (X)" or "North-South (Z)")
-
     return table.concat({
         "=== KINETIC GLASSES TELEMETRY ===",
         string.format("Block:  Square Tube Shaft [%d/%d]", is_active and sdist or 0, MAX_SHAFT_RUN),
@@ -326,7 +335,6 @@ local function format_shaft_glasses_info(pos, node)
             format_int(is_active and avail_ku or 0),
             format_int(supply_ku),
             format_int(is_active and used_ku or 0)),
-        "Axis:   " .. axis_lbl,
     }, "\n")
 end
 
@@ -403,7 +411,7 @@ end
 
 function kinetica.has_axle_port(node, d, pos)
     local name = node.name
-    if kinetica.is_shaft(name) then
+    if kinetica.is_shaft(name) or kinetica.is_gearshift(name) then
         return kinetica.is_Aligned_With_Dir(node.param2, d)
     elseif kinetica.is_chain_drive(name) then
         return dir_on_axis(d, abs_axis(node.param2))
@@ -509,9 +517,6 @@ local function are_contraption_coupled(nodeA, nodeB, dir)
         return true
     end
 
-    if mdefA and mdefB and mdefA.prefix == mdefB.prefix and mdefA.can_ride_piston ~= false then
-        return true
-    end
 
     return false
 end
@@ -547,7 +552,21 @@ local function gearbox_port_alpha(node_name, p)
     end
 end
 
-local function get_edge_spin_mult(nodeA, nodeB, dir)
+local function is_gearshift_powered_at(pos)
+    if not pos then return false end
+    if kinetica.gearshift_has_redstone then
+        return kinetica.gearshift_has_redstone(pos)
+    end
+    if mcl_redstone and mcl_redstone.get_power then
+        local ok, pwr = pcall(mcl_redstone.get_power, vector.new(pos.x, pos.y, pos.z))
+        if ok and type(pwr) == "number" and pwr > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+local function get_edge_spin_mult(nodeA, nodeB, dir, posA, posB)
     local mult = 1
     if kinetica.is_gearbox(nodeA.name) then
         local sigma_out = dir.x + dir.y + dir.z
@@ -560,6 +579,17 @@ local function get_edge_spin_mult(nodeA, nodeB, dir)
         local alpha_in = gearbox_port_alpha(nodeB.name, in_port)
         mult = mult * (-sigma_in * alpha_in)
     end
+    if kinetica.is_gearshift(nodeA.name) and is_gearshift_powered_at(posA) then
+        if (dir.x + dir.y + dir.z) > 0 then
+            mult = mult * -1
+        end
+    end
+    if kinetica.is_gearshift(nodeB.name) and is_gearshift_powered_at(posB) then
+        local in_port = {x = -dir.x, y = -dir.y, z = -dir.z}
+        if (in_port.x + in_port.y + in_port.z) > 0 then
+            mult = mult * -1
+        end
+    end
     return mult
 end
 
@@ -569,6 +599,8 @@ function kinetica.break_conflicting_shaft(cpos)
 
     if kinetica.is_shaft(cnode.name) then
         drop_item = IDLE_SHAFT
+    elseif kinetica.is_gearshift(cnode.name) then
+        drop_item = "kinetica:gearshift"
     elseif kinetica.is_chain_drive(cnode.name) then
         drop_item = "kinetica:chain_drive"
     elseif kinetica.is_gearbox(cnode.name) then
@@ -631,7 +663,7 @@ local function find_conflict_shaft(k1, k2, parent, nodes_by_key)
         if info then
             if kinetica.is_shaft(info.node.name) then
                 table.insert(path_shafts, info.pos)
-            elseif kinetica.is_gearbox(info.node.name) or kinetica.is_chain_drive(info.node.name) then
+            elseif kinetica.is_gearbox(info.node.name) or kinetica.is_gearshift(info.node.name) or kinetica.is_chain_drive(info.node.name) then
                 table.insert(path_relays, info.pos)
             end
         end
@@ -696,6 +728,11 @@ function kinetica.set_node_idle(pos, node, reason_text)
         end
         if name ~= idle_gb then
             core.swap_node(pos, {name = idle_gb, param2 = node.param2})
+        end
+
+    elseif kinetica.is_gearshift(name) then
+        if kinetica.update_gearshift_node then
+            kinetica.update_gearshift_node(pos, reason_text)
         end
 
     elseif kinetica.is_chain_drive(name) then
@@ -767,7 +804,7 @@ function kinetica.update_network(start_pos)
 
     nodes_by_key[start_key] = {
         key       = start_key,
-        pos       = {x = start_pos.x, y = start_pos.y, z = start_pos.z},
+        pos       = vector.new(start_pos.x, start_pos.y, start_pos.z),
         node      = start_node,
         pol       = 1,
         shaft_run = kinetica.is_shaft(start_node.name) and 1 or 0,
@@ -783,7 +820,7 @@ function kinetica.update_network(start_pos)
         local cur = nodes_by_key[cur_key]
 
         for _, d in ipairs(ALL_DIRS) do
-            local npos  = {x = cur.pos.x + d.x, y = cur.pos.y + d.y, z = cur.pos.z + d.z}
+            local npos  = vector.new(cur.pos.x + d.x, cur.pos.y + d.y, cur.pos.z + d.z)
             local nnode = core.get_node(npos)
 
             if kinetica.is_kinetic_node(nnode.name) then
@@ -792,7 +829,7 @@ function kinetica.update_network(start_pos)
                     local next_run = kinetica.is_shaft(nnode.name) and (cur.shaft_run + 1) or 0
                     if next_run <= MAX_SHAFT_RUN then
                         local nkey = core.hash_node_position(npos)
-                        local mult = (link_type == "contraption") and 1 or get_edge_spin_mult(cur.node, nnode, d)
+                        local mult = (link_type == "contraption") and 1 or get_edge_spin_mult(cur.node, nnode, d, cur.pos, npos)
                         local expected_pol = cur.pol * mult
 
                         if not nodes_by_key[nkey] then
@@ -937,6 +974,7 @@ function kinetica.update_network(start_pos)
     end
 
     local gearbox_count     = 0
+    local gearshift_count   = 0
     local chain_drive_count = 0
     local pump_count        = 0
     local piston_count      = 0
@@ -950,6 +988,8 @@ function kinetica.update_network(start_pos)
         if not kinetica.is_source_node(nname, info.pos) then
             if kinetica.is_gearbox(nname) then
                 gearbox_count = gearbox_count + 1
+            elseif kinetica.is_gearshift(nname) then
+                gearshift_count = gearshift_count + 1
             elseif kinetica.is_chain_drive(nname) then
                 chain_drive_count = chain_drive_count + 1
             elseif kinetica.is_water_pump(nname) then
@@ -967,9 +1007,12 @@ function kinetica.update_network(start_pos)
         end
     end
 
-    local total_fines     = (gearbox_count * GEARBOX_FINE_KU) + (chain_drive_count * CHAIN_DRIVE_FINE_KU)
-    local after_fines_ku  = math.max(0, total_supply_ku - total_fines)
-    local total_demand_ku = total_fines
+    local per_gearshift_fine = kinetica.GEARSHIFT_FINE_KU or GEARSHIFT_FINE_KU
+    local total_fines        = (gearbox_count * GEARBOX_FINE_KU)
+                             + (gearshift_count * per_gearshift_fine)
+                             + (chain_drive_count * CHAIN_DRIVE_FINE_KU)
+    local after_fines_ku     = math.max(0, total_supply_ku - total_fines)
+    local total_demand_ku    = total_fines
         + (pump_count * per_pump_ku)
         + (piston_count * per_piston_ku)
         + custom_machine_ku
@@ -1112,6 +1155,12 @@ function kinetica.update_network(start_pos)
                 ))
                 core.get_node_timer(pos):start(WATCHDOG_SECONDS)
 
+            elseif kinetica.is_gearshift(name) then
+                if kinetica.update_gearshift_node then
+                    kinetica.update_gearshift_node(pos)
+                end
+                core.get_node_timer(pos):start(0.5)
+
             elseif kinetica.is_chain_drive(name) then
                 local back      = core.facedir_to_dir(node.param2) or {x = 0, y = 0, z = 1}
                 local axis_sign = back.x + back.y + back.z
@@ -1202,13 +1251,13 @@ function kinetica.update_network(start_pos)
 end
 
 function kinetica.schedule_network_update(pos)
-    local p = {x = pos.x, y = pos.y, z = pos.z}
+    local p = vector.new(pos.x, pos.y, pos.z)
     core.after(0.05, function()
         if kinetica.is_kinetic_node(core.get_node(p).name) then
             kinetica.update_network(p)
         end
         for _, d in ipairs(ALL_DIRS) do
-            local np = {x = p.x + d.x, y = p.y + d.y, z = p.z + d.z}
+            local np = vector.new(p.x + d.x, p.y + d.y, p.z + d.z)
             if kinetica.is_kinetic_node(core.get_node(np).name) then
                 kinetica.update_network(np)
             end
