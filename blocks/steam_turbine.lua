@@ -1,8 +1,8 @@
+-- kinetica/steam_turbine.lua
 kinetica = kinetica or {}
 
 local modname = core.get_current_modname() or "kinetica"
 local modpath = core.get_modpath(modname) or ""
-
 
 local SOUND_CONFIG = {
     ENABLE_SOUND            = true,
@@ -27,24 +27,13 @@ local CONFIG = {
     MAX_DIRECT_CHAIN              = 3,
     MAX_RPM_CAP                   = 3072,
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
-    ANIM_TIERS = {
-        { name = "crawl",  max_rpm = 5,    length = 0.85 },
-        { name = "slow",   max_rpm = 15,   length = 0.48 },
-        { name = "medium", max_rpm = 63,   length = 0.24 },
-        { name = "fast",   max_rpm = 255,  length = 0.11 },
-        { name = "hyper",  max_rpm = 1024, length = 0.05 },
-        { name = "ultra",  max_rpm = 3072, length = 0.03 },
-    },
     TEX_PORT_BACK                 = "kinetica_turbo_back.png",
     TEX_SIDE                      = "kinetica_turbo_side.png",
     TEX_FRONT_OFF                 = "kinetica_steam_turbo_front_off.png",
     TEX_FRONT_ON                  = "kinetica_steam_turbo_front_on.png",
 }
 
-local IDLE_NAME       = "kinetica:turbine"
-local ACTIVE_NAME     = "kinetica:turbine_active"
-local ACTIVE_CW_NAME  = "kinetica:turbine_active_cw"
-local ACTIVE_CCW_NAME = "kinetica:turbine_active_ccw"
+local IDLE_NAME = "kinetica:turbine"
 
 local TURBINE_KU        = CONFIG.TURBINE_KU
 local TURBINE_RPM       = CONFIG.TURBINE_RPM
@@ -110,22 +99,18 @@ kinetica.is_turbine = is_turbine_node
 
 local function get_anim_tier_name(rpm)
     local clamped = math.min(CONFIG.MAX_RPM_CAP, math.max(0, rpm or 0))
-    for _, tier in ipairs(CONFIG.ANIM_TIERS) do
+    for _, tier in ipairs(kinetica.api.registration.ANIM_TIERS) do
         if clamped <= tier.max_rpm then
             return tier.name
         end
     end
-    return CONFIG.ANIM_TIERS[#CONFIG.ANIM_TIERS].name
+    return kinetica.api.registration.ANIM_TIERS[#kinetica.api.registration.ANIM_TIERS].name
 end
 
 local function get_active_turbine_node_name(rpm, vis_spin)
     local tier_name = get_anim_tier_name(rpm)
     local dir_tag   = (vis_spin == -1) and "ccw" or "cw"
-    local candidate = IDLE_NAME .. "_" .. tier_name .. "_" .. dir_tag
-    if core.registered_nodes[candidate] then
-        return candidate
-    end
-    return ACTIVE_NAME
+    return IDLE_NAME .. "_" .. tier_name .. "_" .. dir_tag
 end
 
 local function same_axle_axis(dir1, dir2)
@@ -241,9 +226,42 @@ local function sync_turbine_tier(pos)
     end
 end
 
-kinetica._tier_node_map   = kinetica._tier_node_map   or {}
-kinetica._tier_sync_funcs = kinetica._tier_sync_funcs or {}
-kinetica._tier_sync_funcs[IDLE_NAME] = sync_turbine_tier
+local function format_turbine_glasses_info(pos, node)
+    local meta = core.get_meta(pos)
+    local rpm  = meta:get_float("rpm")
+    local is_self_powered = (meta:get_int("self_powered") == 1)
+    local steam = meta:get_int("steam")
+    local chain_len = meta:get_int("chain_len")
+    local is_overloaded = (meta:get_int("chain_overloaded") == 1)
+    local is_choked = (meta:get_int("exhaust_blocked") == 1)
+
+    local state_str = "IDLE"
+    if is_overloaded then state_str = "OVERLOADED (Max 3 Turbines)"
+    elseif is_choked then state_str = "CHOKED (Exhaust Blocked)"
+    elseif is_self_powered then state_str = "ACTIVE (Generating)"
+    elseif rpm > 0 then state_str = "PASSIVE (Driven by Shaft)"
+    end
+
+    local T = kinetica.api and kinetica.api.telemetry or nil
+    if not T then return "" end
+
+    return table.concat({
+        "┌─ ENGINEER'S GLASSES ──────────────",
+        "│  Machine: Steam Turbine",
+        "│  ● STATE: " .. state_str,
+        "├─ KINETIC NETWORK ─────────────────",
+        T.kv_row("Speed", string.format("%.1f RPM", is_self_powered and CONFIG.TURBINE_RPM or rpm)),
+        T.kv_row("Supply", is_self_powered and (CONFIG.TURBINE_KU .. " KU") or "0 KU"),
+        "├─ MACHINE DETAILS ─────────────────",
+        T.kv_row("Internal Steam", steam),
+        T.kv_row("Chain Length", string.format("%d / %d", chain_len, CONFIG.MAX_DIRECT_CHAIN)),
+        "└───────────────────────────────────",
+    }, "\n")
+end
+
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE_NAME, format_turbine_glasses_info)
+end
 
 local function turbine_timer(pos, elapsed)
     local meta  = core.get_meta(pos)
@@ -279,9 +297,10 @@ local function turbine_timer(pos, elapsed)
         if node.name ~= IDLE_NAME then
             core.swap_node(pos, {name = IDLE_NAME, param2 = horiz_param2})
         end
-        if kinetica.update_network then
-            kinetica.update_network(pos)
+        if kinetica.api and kinetica.api.network.update then
+            kinetica.api.network.update(pos)
         end
+        meta:set_string("glasses_info", format_turbine_glasses_info(pos, core.get_node(pos)))
         return true
     end
 
@@ -327,12 +346,8 @@ local function turbine_timer(pos, elapsed)
         meta:set_int("local_spin", axis_sign)
     end
 
-    if is_self_powered and node.name ~= ACTIVE_NAME then
-        core.swap_node(pos, {name = ACTIVE_NAME, param2 = horiz_param2})
-    end
-
-    if kinetica.update_network then
-        kinetica.update_network(pos)
+    if kinetica.api and kinetica.api.network.update then
+        kinetica.api.network.update(pos)
     end
 
     local is_overstressed = meta:get_int("network_overstressed") == 1
@@ -342,9 +357,7 @@ local function turbine_timer(pos, elapsed)
 
     if should_spin_vis then
         sync_turbine_tier(pos)
-        -- Play sound ONLY while the turbine is actively spinning and not overstressed
         play_turbine_active_sound(pos, meta, eff_rpm, is_self_powered, 1.0)
-        return true
     else
         meta:set_float("sfx_timer", 0)
         if not is_overstressed and not CONFIG.HIDE_INFOTEXT_WITHOUT_GLASSES then
@@ -361,8 +374,10 @@ local function turbine_timer(pos, elapsed)
         if core.get_node(pos).name ~= IDLE_NAME then
             core.swap_node(pos, {name = IDLE_NAME, param2 = horiz_param2})
         end
-        return (steam > 0 or chain_len > 1)
     end
+
+    meta:set_string("glasses_info", format_turbine_glasses_info(pos, core.get_node(pos)))
+    return (steam > 0 or chain_len > 1)
 end
 
 local function make_turbine_anim(reverse, anim_length)
@@ -385,30 +400,42 @@ local function make_turbine_anim(reverse, anim_length)
     }
 end
 
-local base_groups   = {pickaxey = 2, steam_connectable = 1, pipe_steam = 1, pipe_exhaust = 1, rotational_source = 1, kinetica_turbine = 1}
-local active_groups = {pickaxey = 2, not_in_creative_inventory = 1, steam_connectable = 1, pipe_steam = 1, pipe_exhaust = 1, rotational_source = 1, kinetica_turbine = 1}
+local hyper_cw  = make_turbine_anim(false, 0.05)
+local hyper_ccw = make_turbine_anim(true,  0.05)
 
-local function register_turbine_variant(node_name, back_tile, front_tile, is_base)
-    core.register_node(node_name, {
-        description = is_base
-            and string.format("Steam Turbine (%d KU | %d RPM | Right: Steam In | Top: Exhaust)", TURBINE_KU, TURBINE_RPM)
-            or  "Steam Turbine",
-        tiles = {
-            CONFIG.TEX_PORT_BACK,
-            CONFIG.TEX_SIDE,
-            CONFIG.TEX_PORT_BACK,
-            CONFIG.TEX_SIDE,
-            back_tile,
-            front_tile,
-        },
+if kinetica.api and kinetica.api.registration then
+    kinetica.api.registration.register_rotary_machine(IDLE_NAME, {
+        description = string.format("Steam Turbine (%d KU | %d RPM | Right: Steam In | Top: Exhaust)", TURBINE_KU, TURBINE_RPM),
+        description_active = "Steam Turbine",
         paramtype2 = "facedir",
-        drop = is_base and nil or IDLE_NAME,
-        groups = is_base and base_groups or active_groups,
-        _mcl_hardness = 3.5,
-        _mcl_blast_resistance = 3.5,
-        sounds = mcl_sounds.node_sound_metal_defaults(),
+        groups_idle = {pickaxey = 2, steam_connectable = 1, pipe_steam = 1, pipe_exhaust = 1, rotational_source = 1, kinetica_turbine = 1},
+        hardness = 3.5,
+        blast_resistance = 3.5,
+        sounds = mcl_sounds and mcl_sounds.node_sound_metal_defaults and mcl_sounds.node_sound_metal_defaults() or nil,
+        
+        tiles_idle = {
+            CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, CONFIG.TEX_PORT_BACK,
+            CONFIG.TEX_SIDE, CONFIG.TEX_FRONT_OFF, CONFIG.TEX_FRONT_OFF
+        },
+        tiles_active_cw = {
+            CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, CONFIG.TEX_PORT_BACK,
+            CONFIG.TEX_SIDE, hyper_ccw, hyper_cw
+        },
+        tiles_active_ccw = {
+            CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, CONFIG.TEX_PORT_BACK,
+            CONFIG.TEX_SIDE, hyper_cw, hyper_ccw
+        },
+        build_tier_tiles = function(tier, is_ccw)
+            local t_cw  = make_turbine_anim(false, tier.length)
+            local t_ccw = make_turbine_anim(true,  tier.length)
+            if is_ccw then
+                return {CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, t_cw, t_ccw}
+            else
+                return {CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, CONFIG.TEX_PORT_BACK, CONFIG.TEX_SIDE, t_ccw, t_cw}
+            end
+        end,
 
-        on_construct = is_base and function(pos)
+        on_construct = function(pos)
             local meta = core.get_meta(pos)
             meta:set_int("steam", 0)
             meta:set_int("self_powered", 0)
@@ -426,51 +453,19 @@ local function register_turbine_variant(node_name, back_tile, front_tile, is_bas
             end
             core.get_node_timer(pos):start(1.0)
             wake_neighbor_turbines_and_pipes(pos)
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
-            end
-        end or nil,
+        end,
 
         after_dig_node = function(pos)
             wake_neighbor_turbines_and_pipes(pos)
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
-            end
         end,
 
         on_timer = turbine_timer,
     })
 end
 
-register_turbine_variant(IDLE_NAME, CONFIG.TEX_FRONT_OFF, CONFIG.TEX_FRONT_OFF, true)
-
-local hyper_cw  = make_turbine_anim(false, 0.05)
-local hyper_ccw = make_turbine_anim(true,  0.05)
-register_turbine_variant(ACTIVE_NAME,     hyper_ccw, hyper_cw,  false)
-register_turbine_variant(ACTIVE_CW_NAME,  hyper_ccw, hyper_cw,  false)
-register_turbine_variant(ACTIVE_CCW_NAME, hyper_cw,  hyper_ccw, false)
-
-kinetica._tier_node_map[ACTIVE_NAME]     = {canonical = ACTIVE_NAME, base = IDLE_NAME}
-kinetica._tier_node_map[ACTIVE_CW_NAME]  = {canonical = ACTIVE_NAME, base = IDLE_NAME}
-kinetica._tier_node_map[ACTIVE_CCW_NAME] = {canonical = ACTIVE_NAME, base = IDLE_NAME}
-
-for _, tier in ipairs(CONFIG.ANIM_TIERS) do
-    local t_cw  = make_turbine_anim(false, tier.length)
-    local t_ccw = make_turbine_anim(true,  tier.length)
-
-    local name_cw  = IDLE_NAME .. "_" .. tier.name .. "_cw"
-    local name_ccw = IDLE_NAME .. "_" .. tier.name .. "_ccw"
-
-    register_turbine_variant(name_cw,  t_ccw, t_cw,  false)
-    register_turbine_variant(name_ccw, t_cw,  t_ccw, false)
-
-    kinetica._tier_node_map[name_cw]  = {canonical = ACTIVE_NAME, base = IDLE_NAME}
-    kinetica._tier_node_map[name_ccw] = {canonical = ACTIVE_NAME, base = IDLE_NAME}
-end
-
-core.register_on_mods_loaded(function()
-    kinetica.is_turbine = is_turbine_node
-end)
+core.register_alias("kinetica:turbine_active",     "kinetica:turbine_hyper_cw")
+core.register_alias("kinetica:turbine_active_cw",  "kinetica:turbine_hyper_cw")
+core.register_alias("kinetica:turbine_active_ccw", "kinetica:turbine_hyper_ccw")
 
 core.register_lbm({
     label             = "Wake kinetica Steam Turbines on chunk load",

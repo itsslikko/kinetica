@@ -1,3 +1,4 @@
+-- kinetica/steam_generator.lua
 kinetica = kinetica or {}
 
 local modname = core.get_current_modname() or "kinetica"
@@ -210,8 +211,6 @@ function kinetica.get_steam_gen_formspec(burn_percent, water_level, show_water_b
     return table.concat(fs)
 end
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
 local function format_steam_gen_glasses_info(pos, node)
     local meta            = core.get_meta(pos)
     local inv             = meta:get_inventory()
@@ -236,18 +235,25 @@ local function format_steam_gen_glasses_info(pos, node)
         state_str = "WAITING FOR WATER"
     end
 
+    local T = kinetica.api and kinetica.api.telemetry
+    if not T then return "" end
+
     return table.concat({
-        "=== KINETIC GLASSES TELEMETRY ===",
-        "Machine:    Steam Generator",
-        "State:      " .. state_str,
-        string.format("Water Tank: %d%% (%s)", display_water, has_bucket and "Water Bucket" or "Piped Water"),
-        string.format("Firebox:    %d%% Burn Remaining (Fuel: %d)", burn_pct, fuel_stack:get_count()),
-        string.format("Steam Out:  %d Steam/s (Top Port)", is_boiling and STEAM_OUT_PER_SEC or 0),
+        "┌─ ENGINEER'S GLASSES ──────────────",
+        "│  Machine: Steam Generator",
+        "│  ● STATE: " .. state_str,
+        "├─ BOILER STATUS ───────────────────",
+        T.kv_row("Water Tank", string.format("%d%% (%s)", display_water, has_bucket and "Water Bucket" or "Piped")),
+        T.kv_row("Firebox",    string.format("%d%% Burn Remaining (Fuel: %d)", burn_pct, fuel_stack:get_count())),
+        T.kv_row("Steam Out",  string.format("%d Steam/s (Top Port)", is_boiling and STEAM_OUT_PER_SEC or 0)),
+        "└───────────────────────────────────",
     }, "\n")
 end
 
-kinetica._glasses_formatters[IDLE_NAME]   = format_steam_gen_glasses_info
-kinetica._glasses_formatters[ACTIVE_NAME] = format_steam_gen_glasses_info
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE_NAME, format_steam_gen_glasses_info)
+    kinetica.api.telemetry.register_formatter(ACTIVE_NAME, format_steam_gen_glasses_info)
+end
 
 local function spawn_front_firebox_embers(pos, param2)
     if not CONFIG.SPAWN_FRONT_EMBERS then return end

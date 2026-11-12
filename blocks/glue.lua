@@ -1,8 +1,12 @@
+-- kinetica/glue.lua
 kinetica = kinetica or {}
 
 local modname = core.get_current_modname() or "kinetica"
 local modpath = core.get_modpath(modname) or ""
 
+-- ============================================================================
+-- TOP CONFIGURATION SECTION
+-- ============================================================================
 local CONFIG = {
     MAX_GLUE_SPAN         = 32,
     MAX_GLUE_VOLUME       = 2048,
@@ -19,7 +23,26 @@ local CONFIG = {
     TEX_CUSTOM_GLUE_ICON  = "kinetica_super_glue.png",
     TEX_CUSTOM_GLUE_BOX   = "kinetica_super_glue_box.png",
     FALLBACK_BASE_TEX     = "kinetica_belt_side.png",
+    -- PARENT CONTRAPTION POWER SETTINGS
+    ENABLE_GLUE_POWER     = true,
+    POWER_TICK_SEC        = 0.20,
+    MAX_POLE_TRACE        = 34,
+    -- Add future parent blocks here (e.g., "kinetica:windmill_bearing", "kinetica:mechanical_bearing")
+    PARENT_SOURCES = {
+        "kinetica:mechanical_piston",
+        "kinetica:sticky_mechanical_piston",
+        "kinetica:piston_head",
+        "kinetica:piston_head_sticky",
+        "kinetica:piston_pole",
+        "kinetica:piston_extension_pole",
+    },
 }
+
+if kinetica.register_glue_parent_source then
+    for _, pref in ipairs(CONFIG.PARENT_SOURCES) do
+        kinetica.register_glue_parent_source(pref)
+    end
+end
 
 local GLUE_TOOL_NAME   = "kinetica:super_glue"
 local GLUE_ENTITY_NAME = "kinetica:super_glue_box"
@@ -27,24 +50,17 @@ local PREVIEW_ENT_NAME = "kinetica:super_glue_preview"
 
 local player_selections = {}
 local preview_entities  = {}
-local active_glue_boxes = {}
 
 local ALL_6_DIRS = {
-    {x =  1, y =  0, z =  0},
-    {x = -1, y =  0, z =  0},
-    {x =  0, y =  1, z =  0},
-    {x =  0, y = -1, z =  0},
-    {x =  0, y =  0, z =  1},
-    {x =  0, y =  0, z = -1},
+    {x =  1, y =  0, z =  0}, {x = -1, y =  0, z =  0},
+    {x =  0, y =  1, z =  0}, {x =  0, y = -1, z =  0},
+    {x =  0, y =  0, z =  1}, {x =  0, y =  0, z = -1},
 }
 
 local function file_exists(filename)
     if not filename or filename == "" then return false end
     local ok, f = pcall(io.open, modpath .. "/textures/" .. filename, "r")
-    if ok and f then
-        f:close()
-        return true
-    end
+    if ok and f then f:close(); return true end
     return false
 end
 
@@ -56,15 +72,11 @@ kinetica.is_glue_tool = is_glue_tool_name
 local function is_player_holding_glue(player)
     if not player or not player:is_player() then return false end
     local wield = player:get_wielded_item()
-    if wield and is_glue_tool_name(wield:get_name()) then
-        return true
-    end
+    if wield and is_glue_tool_name(wield:get_name()) then return true end
     local inv = player:get_inventory()
     if inv and inv:get_size("offhand") > 0 then
         local off = inv:get_stack("offhand", 1)
-        if off and is_glue_tool_name(off:get_name()) then
-            return true
-        end
+        if off and is_glue_tool_name(off:get_name()) then return true end
     end
     return false
 end
@@ -82,43 +94,29 @@ local function is_any_player_holding_glue_near(pos)
 end
 
 -- =========================================================
--- PERFECTLY ALIGNED 6-FACE BOX TEXTURE OVERLAY BUILDER
+-- TEXTURE OVERLAY BUILDERS
 -- =========================================================
 local function get_base_canvas_tex()
-    if file_exists(CONFIG.FALLBACK_BASE_TEX) then
-        return CONFIG.FALLBACK_BASE_TEX
-    end
-    return "default_stone.png"
+    return file_exists(CONFIG.FALLBACK_BASE_TEX) and CONFIG.FALLBACK_BASE_TEX or "default_stone.png"
 end
 
 local function build_single_cell_tile(hex_color, fill_alpha, border_alpha)
-    if file_exists(CONFIG.TEX_CUSTOM_GLUE_BOX) then
-        return "(" .. CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16)"
-    end
-
-    local b     = get_base_canvas_tex()
-    local fill  = "(" .. b .. "\\^[resize\\:16x16\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(fill_alpha or 55) .. ")"
+    if file_exists(CONFIG.TEX_CUSTOM_GLUE_BOX) then return "(" .. CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16)" end
+    local b = get_base_canvas_tex()
+    local fill = "(" .. b .. "\\^[resize\\:16x16\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(fill_alpha or 55) .. ")"
     local h_bar = "(" .. b .. "\\^[resize\\:16x1\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(border_alpha or 210) .. ")"
     local v_bar = "(" .. b .. "\\^[resize\\:1x16\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(border_alpha or 210) .. ")"
-
-    return "([combine:16x16" ..
-        ":0,0="  .. fill ..
-        ":0,0="  .. h_bar ..
-        ":0,15=" .. h_bar ..
-        ":0,0="  .. v_bar ..
-        ":15,0=" .. v_bar .. ")"
+    return "([combine:16x16:0,0=" .. fill .. ":0,0=" .. h_bar .. ":0,15=" .. h_bar .. ":0,0=" .. v_bar .. ":15,0=" .. v_bar .. ")"
 end
 
 local function build_face_texture(blocks_w, blocks_h, hex_color, is_preview)
     local w = math.max(1, math.min(CONFIG.MAX_TILE_RENDER_SPAN, math.floor(blocks_w + 0.5)))
     local h = math.max(1, math.min(CONFIG.MAX_TILE_RENDER_SPAN, math.floor(blocks_h + 0.5)))
-
-    local pw = w * 16
-    local ph = h * 16
-    local b  = get_base_canvas_tex()
+    local pw, ph = w * 16, h * 16
+    local b = get_base_canvas_tex()
 
     if file_exists(CONFIG.TEX_CUSTOM_GLUE_BOX) then
-        local tile  = "(" .. CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16)"
+        local tile = "(" .. CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16)"
         local parts = {"[combine:" .. pw .. "x" .. ph}
         for gx = 0, w - 1 do
             for gy = 0, h - 1 do
@@ -126,143 +124,70 @@ local function build_face_texture(blocks_w, blocks_h, hex_color, is_preview)
             end
         end
         local combined = table.concat(parts)
-        if is_preview and hex_color == CONFIG.PREVIEW_INVALID_COLOR then
-            combined = combined .. "^[colorize:" .. hex_color .. ":160"
-        end
+        if is_preview and hex_color == CONFIG.PREVIEW_INVALID_COLOR then combined = combined .. "^[colorize:" .. hex_color .. ":160" end
         return combined .. "^[opacity:" .. tostring(is_preview and 195 or 165)
     end
 
-    local fill_op   = is_preview and 65  or 48
-    local grid_op   = is_preview and 115 or 95
+    local fill_op = is_preview and 65 or 48
+    local grid_op = is_preview and 115 or 95
     local border_op = is_preview and 240 or 215
 
-    local bg_fill   = "(" .. b .. "\\^[resize\\:" .. pw .. "x" .. ph .. "\\^[colorize\\:" .. hex_color .. "\\:220\\^[opacity\\:" .. fill_op .. ")"
-    local grid_v    = "(" .. b .. "\\^[resize\\:1x" .. ph .. "\\^[colorize\\:" .. hex_color .. "\\:240\\^[opacity\\:" .. grid_op .. ")"
-    local grid_h    = "(" .. b .. "\\^[resize\\:" .. pw .. "x1\\^[colorize\\:" .. hex_color .. "\\:240\\^[opacity\\:" .. grid_op .. ")"
-    local edge_top  = "(" .. b .. "\\^[resize\\:" .. pw .. "x2\\^[colorize\\:#ffffff\\:80\\^[colorize\\:" .. hex_color .. "\\:220\\^[opacity\\:" .. border_op .. ")"
+    local bg_fill = "(" .. b .. "\\^[resize\\:" .. pw .. "x" .. ph .. "\\^[colorize\\:" .. hex_color .. "\\:220\\^[opacity\\:" .. fill_op .. ")"
+    local grid_v = "(" .. b .. "\\^[resize\\:1x" .. ph .. "\\^[colorize\\:" .. hex_color .. "\\:240\\^[opacity\\:" .. grid_op .. ")"
+    local grid_h = "(" .. b .. "\\^[resize\\:" .. pw .. "x1\\^[colorize\\:" .. hex_color .. "\\:240\\^[opacity\\:" .. grid_op .. ")"
+    local edge_top = "(" .. b .. "\\^[resize\\:" .. pw .. "x2\\^[colorize\\:#ffffff\\:80\\^[colorize\\:" .. hex_color .. "\\:220\\^[opacity\\:" .. border_op .. ")"
     local edge_side = "(" .. b .. "\\^[resize\\:2x" .. ph .. "\\^[colorize\\:#ffffff\\:80\\^[colorize\\:" .. hex_color .. "\\:220\\^[opacity\\:" .. border_op .. ")"
 
-    local parts = {
-        "[combine:" .. pw .. "x" .. ph,
-        ":0,0=" .. bg_fill,
-    }
-
-    for gx = 1, w - 1 do
-        parts[#parts + 1] = ":" .. (gx * 16) .. ",0=" .. grid_v
-    end
-    for gy = 1, h - 1 do
-        parts[#parts + 1] = ":0," .. (gy * 16) .. "=" .. grid_h
-    end
-
+    local parts = {"[combine:" .. pw .. "x" .. ph, ":0,0=" .. bg_fill}
+    for gx = 1, w - 1 do parts[#parts + 1] = ":" .. (gx * 16) .. ",0=" .. grid_v end
+    for gy = 1, h - 1 do parts[#parts + 1] = ":0," .. (gy * 16) .. "=" .. grid_h end
     parts[#parts + 1] = ":0,0=" .. edge_top
     parts[#parts + 1] = ":0," .. (ph - 2) .. "=" .. edge_top
     parts[#parts + 1] = ":0,0=" .. edge_side
     parts[#parts + 1] = ":" .. (pw - 2) .. ",0=" .. edge_side
-
     return table.concat(parts)
 end
 
 local function build_aligned_box_textures(minp, maxp, hex_color, is_preview)
-    local bw = (maxp.x - minp.x) + 1
-    local bh = (maxp.y - minp.y) + 1
-    local bd = (maxp.z - minp.z) + 1
-
+    local bw, bh, bd = (maxp.x - minp.x) + 1, (maxp.y - minp.y) + 1, (maxp.z - minp.z) + 1
     local tex_y = build_face_texture(bw, bd, hex_color, is_preview)
     local tex_x = build_face_texture(bd, bh, hex_color, is_preview)
     local tex_z = build_face_texture(bw, bh, hex_color, is_preview)
-
     return {tex_y, tex_y, tex_x, tex_x, tex_z, tex_z}
 end
 
 local function build_super_glue_icon()
-    if file_exists(CONFIG.TEX_CUSTOM_GLUE_ICON) then
-        return CONFIG.TEX_CUSTOM_GLUE_ICON
-    end
-
+    if file_exists(CONFIG.TEX_CUSTOM_GLUE_ICON) then return CONFIG.TEX_CUSTOM_GLUE_ICON end
     local b = get_base_canvas_tex()
-    local function rect(w, h, hex)
-        return "(" .. b .. "\\^[resize\\:" .. w .. "x" .. h .. "\\^[sheet\\:1x1\\:0,0\\^[colorize\\:" .. hex .. "\\:240)"
-    end
-
-    local cap_tip    = rect(2, 2, "#E0E6ED")
-    local nozzle     = rect(4, 2, "#B0BAC5")
-    local slime_drop = rect(2, 2, "#00E676")
-    local collar     = rect(8, 2, "#263238")
-    local tube_body  = rect(8, 7, "#00C853")
-    local label_band = rect(8, 3, "#ECEFF1")
-    local label_dot  = rect(4, 1, "#00E676")
-    local crimp_end  = rect(8, 2, "#78909C")
-
-    return "[combine:16x16" ..
-        ":7,1="  .. cap_tip ..
-        ":9,1="  .. slime_drop ..
-        ":6,3="  .. nozzle ..
-        ":4,5="  .. collar ..
-        ":4,7="  .. tube_body ..
-        ":4,9="  .. label_band ..
-        ":6,10=" .. label_dot ..
-        ":4,14=" .. crimp_end
+    local function rect(w, h, hex) return "(" .. b .. "\\^[resize\\:" .. w .. "x" .. h .. "\\^[sheet\\:1x1\\:0,0\\^[colorize\\:" .. hex .. "\\:240)" end
+    return "[combine:16x16:7,1=" .. rect(2, 2, "#E0E6ED") .. ":9,1=" .. rect(2, 2, "#00E676") .. ":6,3=" .. rect(4, 2, "#B0BAC5") .. ":4,5=" .. rect(8, 2, "#263238") .. ":4,7=" .. rect(8, 7, "#00C853") .. ":4,9=" .. rect(8, 3, "#ECEFF1") .. ":6,10=" .. rect(4, 1, "#00E676") .. ":4,14=" .. rect(8, 2, "#78909C")
 end
 
 -- =========================================================
--- BOUNDING BOX GEOMETRY, OVERLAP & RAY-AABB MATH
+-- MATH HELPERS
 -- =========================================================
-local function compute_glue_bounds(p1, p2)
-    local minp = {
-        x = math.min(p1.x, p2.x),
-        y = math.min(p1.y, p2.y),
-        z = math.min(p1.z, p2.z),
-    }
-    local maxp = {
-        x = math.max(p1.x, p2.x),
-        y = math.max(p1.y, p2.y),
-        z = math.max(p1.z, p2.z),
-    }
-    local sx = (maxp.x - minp.x) + 1
-    local sy = (maxp.y - minp.y) + 1
-    local sz = (maxp.z - minp.z) + 1
-    local volume = sx * sy * sz
-
-    local center = {
-        x = (minp.x + maxp.x) * 0.5,
-        y = (minp.y + maxp.y) * 0.5,
-        z = (minp.z + maxp.z) * 0.5,
-    }
-    local visual_size = {
-        x = sx + CONFIG.BOX_PAD,
-        y = sy + CONFIG.BOX_PAD,
-        z = sz + CONFIG.BOX_PAD,
-    }
-    local half_ext = {
-        x = sx * 0.5 + 0.01,
-        y = sy * 0.5 + 0.01,
-        z = sz * 0.5 + 0.01,
-    }
-
-    if sx > CONFIG.MAX_GLUE_SPAN or sy > CONFIG.MAX_GLUE_SPAN or sz > CONFIG.MAX_GLUE_SPAN then
-        return minp, maxp, center, visual_size, half_ext, volume, false,
-            string.format("Span too wide (%dx%dx%d; max is %d blocks)!", sx, sy, sz, CONFIG.MAX_GLUE_SPAN)
-    end
-    if volume > CONFIG.MAX_GLUE_VOLUME then
-        return minp, maxp, center, visual_size, half_ext, volume, false,
-            string.format("Volume too large (%d blocks; max is %d)!", volume, CONFIG.MAX_GLUE_VOLUME)
-    end
-
-    return minp, maxp, center, visual_size, half_ext, volume, true, nil
-end
-
-local function is_pos_inside_bounds(pos, minp, maxp)
-    return pos.x >= minp.x and pos.x <= maxp.x and
-           pos.y >= minp.y and pos.y <= maxp.y and
-           pos.z >= minp.z and pos.z <= maxp.z
-end
-
 local function bounds_equal(a_min, a_max, b_min, b_max)
     return a_min.x == b_min.x and a_min.y == b_min.y and a_min.z == b_min.z and
            a_max.x == b_max.x and a_max.y == b_max.y and a_max.z == b_max.z
 end
 
--- Checks if any non-air solid block still exists inside the glue box (Create mod auto-dissolve rule)
+local function compute_glue_bounds(p1, p2)
+    local minp = {x = math.min(p1.x, p2.x), y = math.min(p1.y, p2.y), z = math.min(p1.z, p2.z)}
+    local maxp = {x = math.max(p1.x, p2.x), y = math.max(p1.y, p2.y), z = math.max(p1.z, p2.z)}
+    local sx, sy, sz = (maxp.x - minp.x) + 1, (maxp.y - minp.y) + 1, (maxp.z - minp.z) + 1
+    local volume = sx * sy * sz
+    local center = {x = (minp.x + maxp.x) * 0.5, y = (minp.y + maxp.y) * 0.5, z = (minp.z + maxp.z) * 0.5}
+    local visual_size = {x = sx + CONFIG.BOX_PAD, y = sy + CONFIG.BOX_PAD, z = sz + CONFIG.BOX_PAD}
+    
+    if sx > CONFIG.MAX_GLUE_SPAN or sy > CONFIG.MAX_GLUE_SPAN or sz > CONFIG.MAX_GLUE_SPAN then
+        return minp, maxp, center, visual_size, volume, false, string.format("Span too wide (%dx%dx%d; max is %d blocks)!", sx, sy, sz, CONFIG.MAX_GLUE_SPAN)
+    end
+    if volume > CONFIG.MAX_GLUE_VOLUME then
+        return minp, maxp, center, visual_size, volume, false, string.format("Volume too large (%d blocks; max is %d)!", volume, CONFIG.MAX_GLUE_VOLUME)
+    end
+    return minp, maxp, center, visual_size, volume, true, nil
+end
+
 local function has_any_solid_block_in_bounds(minp, maxp)
     if not minp or not maxp then return false end
     for x = minp.x, maxp.x do
@@ -270,13 +195,9 @@ local function has_any_solid_block_in_bounds(minp, maxp)
             for z = minp.z, maxp.z do
                 local nn = core.get_node({x = x, y = y, z = z}).name
                 if nn ~= "air" then
-                    if nn == "ignore" then
-                        return true
-                    end
+                    if nn == "ignore" then return true end
                     local def = core.registered_nodes[nn]
-                    if not def or not def.liquidtype or def.liquidtype == "none" then
-                        return true
-                    end
+                    if not def or not def.liquidtype or def.liquidtype == "none" then return true end
                 end
             end
         end
@@ -284,127 +205,425 @@ local function has_any_solid_block_in_bounds(minp, maxp)
     return false
 end
 
--- Ray-AABB slab intersection so players can left-click any glue box without blocking right-clicks!
 local function ray_intersects_glue_box(origin, dir, max_dist, minp, maxp)
     local bmin = {x = minp.x - 0.51, y = minp.y - 0.51, z = minp.z - 0.51}
     local bmax = {x = maxp.x + 0.51, y = maxp.y + 0.51, z = maxp.z + 0.51}
-
-    local tmin = 0.0
-    local tmax = max_dist
+    local tmin, tmax = 0.0, max_dist
 
     for _, axis in ipairs({"x", "y", "z"}) do
-        local o = origin[axis]
-        local d = dir[axis]
+        local o, d = origin[axis], dir[axis]
         if math.abs(d) < 1e-6 then
-            if o < bmin[axis] or o > bmax[axis] then
-                return nil
-            end
+            if o < bmin[axis] or o > bmax[axis] then return nil end
         else
-            local t1 = (bmin[axis] - o) / d
-            local t2 = (bmax[axis] - o) / d
+            local t1, t2 = (bmin[axis] - o) / d, (bmax[axis] - o) / d
             if t1 > t2 then t1, t2 = t2, t1 end
             if t1 > tmin then tmin = t1 end
             if t2 < tmax then tmax = t2 end
-            if tmin > tmax then
-                return nil
-            end
+            if tmin > tmax then return nil end
         end
     end
-
     return tmin
 end
 
 local function find_raycasted_glue_box(player)
-    local eye_pos = vector.add(player:get_pos(), {
-        x = 0,
-        y = (player:get_properties().eye_height or 1.62),
-        z = 0,
-    })
-    local look_dir  = player:get_look_dir()
-    local best_box  = nil
-    local best_dist = math.huge
+    local eye_pos = vector.add(player:get_pos(), {x = 0, y = (player:get_properties().eye_height or 1.62), z = 0})
+    local look_dir, best_box, best_dist = player:get_look_dir(), nil, math.huge
 
-    for self, _ in pairs(active_glue_boxes) do
-        if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            local hit_t = ray_intersects_glue_box(eye_pos, look_dir, CONFIG.PREVIEW_RAY_DISTANCE, self.minp, self.maxp)
-            if hit_t and hit_t < best_dist then
-                best_dist = hit_t
-                best_box  = self
+    if kinetica.api and kinetica.api.contraptions and kinetica.api.contraptions.active_glue_boxes then
+        for self, _ in pairs(kinetica.api.contraptions.active_glue_boxes) do
+            if self.object and self.object:get_luaentity() and self.minp and self.maxp then
+                local hit_t = ray_intersects_glue_box(eye_pos, look_dir, CONFIG.PREVIEW_RAY_DISTANCE, self.minp, self.maxp)
+                if hit_t and hit_t < best_dist then
+                    best_dist = hit_t
+                    best_box  = self
+                end
             end
-        else
-            active_glue_boxes[self] = nil
         end
     end
     return best_box
 end
 
--- =========================================================
--- PARTICLES & AUDIO EFFECTS
--- =========================================================
 local function spawn_glue_particles(minp, maxp, hex_color, burst_count)
     local tex = build_single_cell_tile(hex_color or CONFIG.GLUE_COLOR, 180, 255)
     core.add_particlespawner({
-        amount     = burst_count or 20,
-        time       = 0.15,
-        minpos     = {x = minp.x - 0.45, y = minp.y - 0.45, z = minp.z - 0.45},
-        maxpos     = {x = maxp.x + 0.45, y = maxp.y + 0.45, z = maxp.z + 0.45},
-        minvel     = {x = -0.5, y =  0.2, z = -0.5},
-        maxvel     = {x =  0.5, y =  0.9, z =  0.5},
-        minexptime = 0.25,
-        maxexptime = 0.55,
-        minsize    = 1.2,
-        maxsize    = 2.2,
-        glow       = 12,
-        texture    = tex,
+        amount = burst_count or 20, time = 0.15,
+        minpos = {x = minp.x - 0.45, y = minp.y - 0.45, z = minp.z - 0.45},
+        maxpos = {x = maxp.x + 0.45, y = maxp.y + 0.45, z = maxp.z + 0.45},
+        minvel = {x = -0.5, y = 0.2, z = -0.5}, maxvel = {x = 0.5, y = 0.9, z = 0.5},
+        minexptime = 0.25, maxexptime = 0.55, minsize = 1.2, maxsize = 2.2, glow = 12, texture = tex,
     })
 end
 
 local function play_glue_sound(pos, pitch)
-    local snd = (mcl_sounds and mcl_sounds.node_sound_slime_defaults) and "default_place_node" or "default_place_node_hard"
-    core.sound_play(snd, {
-        pos               = pos,
-        gain              = 0.55,
-        pitch             = pitch or 1.15,
-        max_hear_distance = 16,
-    }, true)
+    core.sound_play("default_place_node_hard", {pos = pos, gain = 0.55, pitch = pitch or 1.15, max_hear_distance = 16}, true)
 end
 
 -- =========================================================
--- PERSISTENT 3D SUPER GLUE BOX ENTITY
+-- ENTITY & PARENT POWER LOGIC
 -- =========================================================
 local function apply_glue_box_visuals(self)
     if not self.minp or not self.maxp then return end
     local minp, maxp, center, visual_size = compute_glue_bounds(self.minp, self.maxp)
-    self.minp = minp
-    self.maxp = maxp
+    self.minp, self.maxp = minp, maxp
 
     local show_now = is_any_player_holding_glue_near(center)
-    self._shown    = show_now
+    self._shown = show_now
 
-    -- Keep `pointable = false` so existing glue boxes NEVER block right-clicking blocks inside them
-    -- or overlapping multiple glue boxes! Left-clicking uses `find_raycasted_glue_box`.
     self.object:set_pos(center)
     self.object:set_properties({
-        visual            = "cube",
-        visual_size       = visual_size,
-        textures          = build_aligned_box_textures(minp, maxp, CONFIG.GLUE_COLOR, false),
-        use_texture_alpha = true,
-        backface_culling  = false,
-        shaded            = false,
-        glow              = 8,
-        is_visible        = show_now,
-        pointable         = false,
-        collisionbox      = {0, 0, 0, 0, 0, 0},
-        selectionbox      = {0, 0, 0, 0, 0, 0},
+        visual = "cube", visual_size = visual_size,
+        textures = build_aligned_box_textures(minp, maxp, CONFIG.GLUE_COLOR, false),
+        use_texture_alpha = true, backface_culling = false, shaded = false, glow = 8,
+        is_visible = show_now, pointable = false, collisionbox = {0, 0, 0, 0, 0, 0}, selectionbox = {0, 0, 0, 0, 0, 0},
     })
+end
+
+local function get_first_solid(minp, maxp)
+    if not minp or not maxp then return nil, nil end
+    for x = minp.x, maxp.x do
+        for y = minp.y, maxp.y do
+            for z = minp.z, maxp.z do
+                local name = core.get_node({x = x, y = y, z = z}).name
+                if name ~= "air" and name ~= "ignore" then
+                    return {x = x, y = y, z = z}, name
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function find_machine_def_for_glue(node_name)
+    if kinetica.get_machine_def then
+        return kinetica.get_machine_def(node_name)
+    end
+    if not node_name or type(kinetica.registered_machines) ~= "table" then return nil end
+    for prefix, mdef in pairs(kinetica.registered_machines) do
+        if node_name == prefix or string.sub(node_name, 1, #prefix + 1) == (prefix .. "_") then
+            if #prefix > 0 then return mdef end
+        end
+    end
+    return nil
+end
+
+local function is_registered_parent_node(node_name)
+    if not node_name or node_name == "air" or node_name == "ignore" then return false end
+    local list = (kinetica.glue_parent_prefixes) or CONFIG.PARENT_SOURCES
+    for _, prefix in ipairs(list) do
+        if node_name == prefix or string.sub(node_name, 1, #prefix + 1) == (prefix .. "_") then
+            return true
+        end
+    end
+    return false
+end
+
+local function resolve_parent_controller_pos(cand_pos, cand_node)
+    local cname = cand_node.name
+    if kinetica.is_mechanical_piston and kinetica.is_mechanical_piston(cname) then
+        return cand_pos, cand_node
+    end
+
+    if (kinetica.is_piston_pole_or_head and kinetica.is_piston_pole_or_head(cname)) or
+       string.find(cname, "piston_head") or string.find(cname, "piston_pole") then
+        local push_dir = kinetica.get_piston_push_dir and kinetica.get_piston_push_dir(cand_node.param2)
+        if not push_dir then
+            local axisdir = math.floor(((cand_node.param2 or 0) % 24) / 4)
+            local map = {
+                [0] = {x = 0, y = 1, z = 0}, [1] = {x = 0, y = 0, z = 1},
+                [2] = {x = 0, y = 0, z = -1}, [3] = {x = 1, y = 0, z = 0},
+                [4] = {x = -1, y = 0, z = 0}, [5] = {x = 0, y = -1, z = 0},
+            }
+            push_dir = map[axisdir] or {x = 0, y = 1, z = 0}
+        end
+
+        for _, sign in ipairs({-1, 1}) do
+            local step = {x = push_dir.x * sign, y = push_dir.y * sign, z = push_dir.z * sign}
+            for i = 1, (CONFIG.MAX_POLE_TRACE or 34) do
+                local cpos  = {x = cand_pos.x + step.x * i, y = cand_pos.y + step.y * i, z = cand_pos.z + step.z * i}
+                local cnode = core.get_node(cpos)
+                if kinetica.is_mechanical_piston and kinetica.is_mechanical_piston(cnode.name) then
+                    return cpos, cnode
+                elseif not ((kinetica.is_piston_pole_or_head and kinetica.is_piston_pole_or_head(cnode.name)) or string.find(cnode.name, "piston_pole")) then
+                    break
+                end
+            end
+        end
+        return nil, nil
+    end
+
+    return cand_pos, cand_node
+end
+
+local function read_parent_power_state(parent_pos, parent_node)
+    local pmeta = core.get_meta(parent_pos)
+    local now   = math.floor(core.get_gametime())
+
+    local lit_ok   = (pmeta:get_int("lit_until") > now) or (pmeta:get_int("contraption_powered_until") > now) or (pmeta:get_int("source_active") == 1)
+    local over     = (pmeta:get_int("network_overstressed") == 1)
+    local rpm      = pmeta:get_float("rpm")
+    local supply   = pmeta:get_int("network_supply_ku")
+    local avail    = pmeta:get_int("rotational_power")
+    local spin_dir = pmeta:get_int("spin_dir")
+
+    if rpm <= 0 and pmeta:get_int("source_active") == 1 then
+        rpm      = pmeta:get_float("source_rpm")
+        supply   = pmeta:get_int("source_ku")
+        avail    = supply
+        spin_dir = pmeta:get_int("source_spin")
+    end
+    if spin_dir == 0 then spin_dir = 1 end
+
+    if not lit_ok or over or rpm < 1 or supply <= 0 then
+        return false, 0, 1, 0, 0
+    end
+    return true, rpm, spin_dir, supply, avail
+end
+
+local function get_machine_ku_demand(bpos, bnode, rpm)
+    local bname = bnode.name
+    local mdef  = find_machine_def_for_glue(bname)
+    if mdef and mdef.get_demand_ku then
+        local ok, d = pcall(mdef.get_demand_ku, rpm, bpos, bnode)
+        if ok and type(d) == "number" and d > 0 then
+            return math.floor(d)
+        end
+    end
+    if kinetica.is_water_pump and kinetica.is_water_pump(bname) then
+        return kinetica.get_pump_demand_ku and kinetica.get_pump_demand_ku(rpm) or 16
+    end
+    return 16
+end
+
+local function set_glued_machine_idle(bpos, bnode)
+    local bname = bnode.name
+    local meta  = core.get_meta(bpos)
+    if meta:get_int("glue_powered") == 0 and meta:get_float("rpm") == 0 then
+        return
+    end
+
+    meta:set_int("glue_powered", 0)
+    meta:set_float("rpm", 0)
+    meta:set_int("network_supply_ku", 0)
+    meta:set_int("rotational_power", 0)
+    meta:set_int("lit_until", 0)
+    meta:set_int("contraption_powered_until", 0)
+    meta:set_int("source_active", 0)
+    meta:set_float("source_rpm", 0)
+    meta:set_int("source_ku", 0)
+
+    local mdef = find_machine_def_for_glue(bname)
+    if mdef and mdef.set_idle then
+        pcall(mdef.set_idle, bpos, bnode)
+    elseif kinetica.set_node_idle then
+        pcall(kinetica.set_node_idle, bpos, bnode)
+    end
+end
+
+local function clear_parent_glue_load(self)
+    if self and self._last_parent_pos then
+        local pmeta = core.get_meta(self._last_parent_pos)
+        if pmeta:get_int("glue_attached_ku") ~= 0 then
+            pmeta:set_int("glue_attached_ku", 0)
+            if kinetica.api and kinetica.api.network and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(self._last_parent_pos)
+            end
+        end
+        self._last_parent_pos = nil
+        self._last_parent_ku  = 0
+    end
+end
+
+local function update_glue_box_parent_power(self)
+    if not CONFIG.ENABLE_GLUE_POWER or not self.minp or not self.maxp then return end
+
+    local now = math.floor(core.get_gametime())
+
+    local anchor = self.anchor_pos or get_first_solid(self.minp, self.maxp)
+    local cluster_positions = {}
+
+    if anchor and kinetica.api and kinetica.api.contraptions and kinetica.api.contraptions.get_glued_cluster_positions then
+        cluster_positions = kinetica.api.contraptions.get_glued_cluster_positions(anchor)
+    end
+    if #cluster_positions == 0 then
+        for x = self.minp.x, self.maxp.x do
+            for y = self.minp.y, self.maxp.y do
+                for z = self.minp.z, self.maxp.z do
+                    local bp = {x = x, y = y, z = z}
+                    local nn = core.get_node(bp).name
+                    if nn ~= "air" and nn ~= "ignore" then
+                        cluster_positions[#cluster_positions + 1] = bp
+                    end
+                end
+            end
+        end
+    end
+
+    local found_parent_pos, found_parent_node = nil, nil
+    local checked_candidates = {}
+
+    local function check_candidate(p)
+        local hk = core.hash_node_position(p)
+        if checked_candidates[hk] then return false end
+        checked_candidates[hk] = true
+
+        local n = core.get_node(p)
+        if is_registered_parent_node(n.name) then
+            local ppos, pnode = resolve_parent_controller_pos(p, n)
+            if ppos and pnode then
+                local is_act = read_parent_power_state(ppos, pnode)
+                if is_act then
+                    found_parent_pos, found_parent_node = ppos, pnode
+                    return true
+                elseif not found_parent_pos then
+                    found_parent_pos, found_parent_node = ppos, pnode
+                end
+            end
+        end
+        return false
+    end
+
+    for _, cp in ipairs(cluster_positions) do
+        if check_candidate(cp) then break end
+        for _, d in ipairs(ALL_6_DIRS) do
+            if check_candidate({x = cp.x + d.x, y = cp.y + d.y, z = cp.z + d.z}) then break end
+        end
+        if found_parent_pos and read_parent_power_state(found_parent_pos, found_parent_node) then
+            break
+        end
+    end
+
+    local parent_hash = found_parent_pos and core.hash_node_position(found_parent_pos) or nil
+
+    local glued_machines = {}
+    for x = self.minp.x, self.maxp.x do
+        for y = self.minp.y, self.maxp.y do
+            for z = self.minp.z, self.maxp.z do
+                local bpos  = {x = x, y = y, z = z}
+                local bhash = core.hash_node_position(bpos)
+                if bhash ~= parent_hash then
+                    local bnode = core.get_node(bpos)
+                    local bname = bnode.name
+                    if bname ~= "air" and bname ~= "ignore" and not is_registered_parent_node(bname) then
+                        local mdef = find_machine_def_for_glue(bname)
+                        local is_mach = (mdef ~= nil)
+                            or (core.get_item_group(bname, "kinetic_receiver") > 0)
+                            or (kinetica.is_water_pump and kinetica.is_water_pump(bname))
+                            or (kinetica.is_mechanical_drill and kinetica.is_mechanical_drill(bname))
+                            or (kinetica.is_mechanical_saw and kinetica.is_mechanical_saw(bname))
+                            or (kinetica.is_mechanical_press and kinetica.is_mechanical_press(bname))
+                            or (kinetica.is_crushing_wheel and kinetica.is_crushing_wheel(bname))
+                            or (kinetica.is_deployer and kinetica.is_deployer(bname))
+
+                        if is_mach then
+                            glued_machines[#glued_machines + 1] = {pos = bpos, node = bnode, mdef = mdef}
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if not found_parent_pos or not found_parent_node then
+        clear_parent_glue_load(self)
+        for _, gm in ipairs(glued_machines) do
+            set_glued_machine_idle(gm.pos, gm.node)
+        end
+        return
+    end
+
+    local p_active, p_rpm, p_spin, p_supply, p_avail = read_parent_power_state(found_parent_pos, found_parent_node)
+    if not p_active then
+        clear_parent_glue_load(self)
+        for _, gm in ipairs(glued_machines) do
+            set_glued_machine_idle(gm.pos, gm.node)
+        end
+        return
+    end
+
+    local total_glue_ku = 0
+    for _, gm in ipairs(glued_machines) do
+        local d_ku = get_machine_ku_demand(gm.pos, gm.node, p_rpm)
+        gm.demand_ku  = d_ku
+        total_glue_ku = total_glue_ku + d_ku
+    end
+
+    local pmeta        = core.get_meta(found_parent_pos)
+    local prev_glue_ku = pmeta:get_int("glue_attached_ku")
+
+    if self._last_parent_pos and core.hash_node_position(self._last_parent_pos) ~= parent_hash then
+        clear_parent_glue_load(self)
+    end
+    self._last_parent_pos = {x = found_parent_pos.x, y = found_parent_pos.y, z = found_parent_pos.z}
+    self._last_parent_ku  = total_glue_ku
+
+    if prev_glue_ku ~= total_glue_ku then
+        pmeta:set_int("glue_attached_ku", total_glue_ku)
+        if kinetica.api and kinetica.api.network and kinetica.api.network.update then
+            kinetica.api.network.update(found_parent_pos)
+            p_active, p_rpm, p_spin, p_supply, p_avail = read_parent_power_state(found_parent_pos, core.get_node(found_parent_pos))
+        end
+    end
+
+    if not p_active or p_supply <= 0 then
+        for _, gm in ipairs(glued_machines) do
+            set_glued_machine_idle(gm.pos, gm.node)
+        end
+        return
+    end
+
+    for _, gm in ipairs(glued_machines) do
+        local bpos  = gm.pos
+        local bnode = gm.node
+        local bname = bnode.name
+        local meta  = core.get_meta(bpos)
+
+        local node_spin = p_spin
+        if kinetica.is_crushing_wheel and kinetica.is_crushing_wheel(bname) then
+            node_spin = ((bpos.x + bpos.y + bpos.z) % 2 == 0) and p_spin or (-p_spin)
+        end
+
+        meta:set_int("glue_powered", 1)
+        meta:set_float("rpm", p_rpm)
+        meta:set_int("spin_dir", node_spin)
+        meta:set_int("local_spin", node_spin)
+        meta:set_int("machine_demand_ku", gm.demand_ku or 16)
+        meta:set_int("network_supply_ku", p_supply)
+        meta:set_int("rotational_power", p_avail)
+        meta:set_int("network_used_ku", math.max(0, p_supply - p_avail))
+        meta:set_int("network_overstressed", 0)
+        meta:set_int("lit_until", now + 4)
+        meta:set_int("contraption_powered_until", now + 4)
+        meta:set_int("source_active", 1)
+        meta:set_float("source_rpm", p_rpm)
+        meta:set_int("source_ku", p_supply)
+        meta:set_int("source_spin", node_spin)
+
+        if gm.mdef and gm.mdef.wake then
+            pcall(gm.mdef.wake, bpos, bnode, p_rpm, node_spin, gm.demand_ku or 16, p_avail, p_supply)
+        end
+
+        local timer = core.get_node_timer(bpos)
+        if timer and not timer:is_started() then
+            timer:start(0.20)
+        end
+    end
 end
 
 local function destroy_glue_box(self, notify_player_name, reason_msg)
     if not self then return end
-    active_glue_boxes[self] = nil
+    clear_parent_glue_load(self)
     if self.minp and self.maxp then
+        for x = self.minp.x, self.maxp.x do
+            for y = self.minp.y, self.maxp.y do
+                for z = self.minp.z, self.maxp.z do
+                    local bp = {x = x, y = y, z = z}
+                    set_glued_machine_idle(bp, core.get_node(bp))
+                end
+            end
+        end
         spawn_glue_particles(self.minp, self.maxp, CONFIG.GLUE_COLOR, 22)
     end
+    if kinetica.api and kinetica.api.contraptions then kinetica.api.contraptions.active_glue_boxes[self] = nil end
     if self.object then
         local p = self.object:get_pos()
         if p then play_glue_sound(p, 0.85) end
@@ -417,68 +636,100 @@ end
 
 core.register_entity(GLUE_ENTITY_NAME, {
     initial_properties = {
-        physical             = false,
-        collide_with_objects = false,
-        pointable            = false,
-        visual               = "cube",
-        visual_size          = {x = 1.015, y = 1.015, z = 1.015},
-        textures             = {"blank.png", "blank.png", "blank.png", "blank.png", "blank.png", "blank.png"},
-        use_texture_alpha    = true,
-        backface_culling     = false,
-        shaded               = false,
-        glow                 = 8,
-        static_save          = true,
+        physical = false, collide_with_objects = false, pointable = false, visual = "cube",
+        visual_size = {x = 1.015, y = 1.015, z = 1.015}, textures = {"blank.png", "blank.png", "blank.png", "blank.png", "blank.png", "blank.png"},
+        use_texture_alpha = true, backface_culling = false, shaded = false, glow = 8, static_save = true,
     },
-
     on_activate = function(self, staticdata)
         self.object:set_armor_groups({immortal = 1})
-        self._vis_timer   = 0
-        self._empty_check = 0
-
+        self._vis_timer, self._empty_check = 0, 0
+        self._move_timer, self._power_timer = 0, 0
+        
         if staticdata and staticdata ~= "" then
             local data = core.deserialize(staticdata)
-            if type(data) == "table" and data.minp and data.maxp then
-                self.minp = vector.round(data.minp)
-                self.maxp = vector.round(data.maxp)
+            if type(data) == "table" then
+                if data.minp and data.maxp then
+                    self.minp, self.maxp = vector.round(data.minp), vector.round(data.maxp)
+                end
+                if data.anchor_pos and data.anchor_name then
+                    self.anchor_pos = vector.round(data.anchor_pos)
+                    self.anchor_name = data.anchor_name
+                end
+            end
+        end
+        if not self.minp or not self.maxp then
+            local p = vector.round(self.object:get_pos() or {x = 0, y = 0, z = 0})
+            self.minp, self.maxp = p, p
+        end
+        if not self.anchor_pos then
+            self.anchor_pos, self.anchor_name = get_first_solid(self.minp, self.maxp)
+        end
+        if kinetica.api and kinetica.api.contraptions then kinetica.api.contraptions.active_glue_boxes[self] = true end
+        apply_glue_box_visuals(self)
+        update_glue_box_parent_power(self)
+    end,
+    get_staticdata = function(self) 
+        return core.serialize({minp = self.minp, maxp = self.maxp, anchor_pos = self.anchor_pos, anchor_name = self.anchor_name}) 
+    end,
+    on_deactivate = function(self)
+        clear_parent_glue_load(self)
+        if kinetica.api and kinetica.api.contraptions then kinetica.api.contraptions.active_glue_boxes[self] = nil end
+    end,
+    on_step = function(self, dtime)
+        -- 1. High-frequency shift tracking when pushed/pulled by a Piston
+        self._move_timer = (self._move_timer or 0) + dtime
+        if self._move_timer >= 0.05 then
+            self._move_timer = 0
+            if self.minp and self.maxp then
+                if self.anchor_pos and self.anchor_name then
+                    local current = core.get_node(self.anchor_pos).name
+                    if current ~= self.anchor_name then
+                        local shifted = false
+                        for _, d in ipairs(ALL_6_DIRS) do
+                            local cand_name = core.get_node(vector.add(self.anchor_pos, d)).name
+                            if cand_name == self.anchor_name or (string.sub(cand_name, 1, 9) == "kinetica:" and string.sub(self.anchor_name, 1, 9) == "kinetica:") then
+                                self.anchor_pos = vector.add(self.anchor_pos, d)
+                                self.anchor_name = cand_name
+                                self.minp = vector.add(self.minp, d)
+                                self.maxp = vector.add(self.maxp, d)
+                                apply_glue_box_visuals(self)
+                                update_glue_box_parent_power(self)
+                                shifted = true
+                                break
+                            end
+                        end
+                        if not shifted then
+                            self.anchor_pos, self.anchor_name = get_first_solid(self.minp, self.maxp)
+                        end
+                    end
+                else
+                    self.anchor_pos, self.anchor_name = get_first_solid(self.minp, self.maxp)
+                end
             end
         end
 
-        if not self.minp or not self.maxp then
-            local p = vector.round(self.object:get_pos() or {x = 0, y = 0, z = 0})
-            self.minp = p
-            self.maxp = p
+        -- 2. Parent Contraption Power & KU Load Sync
+        self._power_timer = (self._power_timer or 0) + dtime
+        if self._power_timer >= (CONFIG.POWER_TICK_SEC or 0.20) then
+            self._power_timer = 0
+            if self.minp and self.maxp then
+                update_glue_box_parent_power(self)
+            end
         end
 
-        active_glue_boxes[self] = true
-        apply_glue_box_visuals(self)
-    end,
-
-    get_staticdata = function(self)
-        return core.serialize({
-            minp = self.minp,
-            maxp = self.maxp,
-        })
-    end,
-
-    on_deactivate = function(self)
-        active_glue_boxes[self] = nil
-    end,
-
-    on_step = function(self, dtime)
+        -- 3. Visibility & Empty checks
         self._vis_timer = (self._vis_timer or 0) + dtime
-        if self._vis_timer < CONFIG.VISIBILITY_CHECK_SEC then
-            return
-        end
+        if self._vis_timer < CONFIG.VISIBILITY_CHECK_SEC then return end
         local dt = self._vis_timer
         self._vis_timer = 0
 
         if not self.minp or not self.maxp then
-            active_glue_boxes[self] = nil
+            clear_parent_glue_load(self)
+            if kinetica.api and kinetica.api.contraptions then kinetica.api.contraptions.active_glue_boxes[self] = nil end
             self.object:remove()
             return
         end
 
-        -- Auto-destroy if all blocks inside the glue box have been removed (Create Mod behavior)
         self._empty_check = (self._empty_check or 0) + dt
         if self._empty_check >= 0.60 then
             self._empty_check = 0
@@ -488,60 +739,37 @@ core.register_entity(GLUE_ENTITY_NAME, {
             end
         end
 
-        local center = {
-            x = (self.minp.x + self.maxp.x) * 0.5,
-            y = (self.minp.y + self.maxp.y) * 0.5,
-            z = (self.minp.z + self.maxp.z) * 0.5,
-        }
+        local center = {x = (self.minp.x + self.maxp.x) * 0.5, y = (self.minp.y + self.maxp.y) * 0.5, z = (self.minp.z + self.maxp.z) * 0.5}
         local should_show = is_any_player_holding_glue_near(center)
-        if should_show ~= self._shown then
-            apply_glue_box_visuals(self)
-        end
+        if should_show ~= self._shown then apply_glue_box_visuals(self) end
     end,
 })
 
--- Immediate check when a node is dug so emptied glue boxes dissolve right away
 core.register_on_dignode(function(pos)
-    for self, _ in pairs(active_glue_boxes) do
-        if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            if is_pos_inside_bounds(pos, self.minp, self.maxp) then
-                if not has_any_solid_block_in_bounds(self.minp, self.maxp) then
-                    destroy_glue_box(self, nil, nil)
+    if kinetica.api and kinetica.api.contraptions and kinetica.api.contraptions.active_glue_boxes then
+        for self, _ in pairs(kinetica.api.contraptions.active_glue_boxes) do
+            if self.object and self.object:get_luaentity() and self.minp and self.maxp then
+                if kinetica.api.contraptions.is_pos_inside_bounds(pos, self.minp, self.maxp) then
+                    if not has_any_solid_block_in_bounds(self.minp, self.maxp) then
+                        destroy_glue_box(self, nil, nil)
+                    end
                 end
+            else
+                kinetica.api.contraptions.active_glue_boxes[self] = nil
             end
-        else
-            active_glue_boxes[self] = nil
         end
     end
 end)
 
--- =========================================================
--- LIVE SELECTION PREVIEW ENTITY & RAYCASTING
--- =========================================================
 core.register_entity(PREVIEW_ENT_NAME, {
     initial_properties = {
-        physical             = false,
-        collide_with_objects = false,
-        pointable            = false,
-        visual               = "cube",
-        visual_size          = {x = 1.02, y = 1.02, z = 1.02},
-        textures             = {"blank.png", "blank.png", "blank.png", "blank.png", "blank.png", "blank.png"},
-        use_texture_alpha    = true,
-        backface_culling     = false,
-        shaded               = false,
-        glow                 = 11,
-        static_save          = false,
+        physical = false, collide_with_objects = false, pointable = false, visual = "cube",
+        visual_size = {x = 1.02, y = 1.02, z = 1.02}, textures = {"blank.png", "blank.png", "blank.png", "blank.png", "blank.png", "blank.png"},
+        use_texture_alpha = true, backface_culling = false, shaded = false, glow = 11, static_save = false,
     },
-
-    on_activate = function(self)
-        self.object:set_armor_groups({immortal = 1})
-    end,
-
+    on_activate = function(self) self.object:set_armor_groups({immortal = 1}) end,
     on_step = function(self)
-        if not self.owner_name then
-            self.object:remove()
-            return
-        end
+        if not self.owner_name then self.object:remove(); return end
         local player = core.get_player_by_name(self.owner_name)
         if not player or not player_selections[self.owner_name] or not is_player_holding_glue(player) then
             preview_entities[self.owner_name] = nil
@@ -552,42 +780,27 @@ core.register_entity(PREVIEW_ENT_NAME, {
 
 local function remove_player_preview(pname)
     local obj = preview_entities[pname]
-    if obj and obj:get_luaentity() then
-        obj:remove()
-    end
+    if obj and obj:get_luaentity() then obj:remove() end
     preview_entities[pname] = nil
 end
 
--- Raycasts for a solid node first; if pointing at open air, returns the air block at `PREVIEW_AIR_DISTANCE`
 local function get_player_target_pos(player, allow_air)
-    local eye_pos = vector.add(player:get_pos(), {
-        x = 0,
-        y = (player:get_properties().eye_height or 1.62),
-        z = 0,
-    })
+    local eye_pos = vector.add(player:get_pos(), {x = 0, y = (player:get_properties().eye_height or 1.62), z = 0})
     local look_dir = player:get_look_dir()
-    local end_pos  = vector.add(eye_pos, vector.multiply(look_dir, CONFIG.PREVIEW_RAY_DISTANCE))
-    local ray      = core.raycast(eye_pos, end_pos, false, false)
-
-    for pointed in ray do
+    local end_pos = vector.add(eye_pos, vector.multiply(look_dir, CONFIG.PREVIEW_RAY_DISTANCE))
+    
+    for pointed in core.raycast(eye_pos, end_pos, false, false) do
         if pointed.type == "node" and pointed.under then
             local nname = core.get_node(pointed.under).name
-            if nname ~= "air" and nname ~= "ignore" then
-                return vector.round(pointed.under), true
-            end
+            if nname ~= "air" and nname ~= "ignore" then return vector.round(pointed.under), true end
         end
     end
-
-    if allow_air then
-        local air_target = vector.add(eye_pos, vector.multiply(look_dir, CONFIG.PREVIEW_AIR_DISTANCE))
-        return vector.round(air_target), false
-    end
-
+    if allow_air then return vector.round(vector.add(eye_pos, vector.multiply(look_dir, CONFIG.PREVIEW_AIR_DISTANCE))), false end
     return nil, false
 end
 
 local function update_player_preview(player, pname, pos1, pos2)
-    local minp, maxp, center, visual_size, _, _, is_valid = compute_glue_bounds(pos1, pos2)
+    local minp, maxp, center, visual_size, _, is_valid = compute_glue_bounds(pos1, pos2)
     local obj = preview_entities[pname]
 
     if not obj or not obj:get_luaentity() then
@@ -603,17 +816,10 @@ local function update_player_preview(player, pname, pos1, pos2)
 
     obj:set_pos(center)
     if not le.last_minp or not bounds_equal(le.last_minp, le.last_maxp, minp, maxp) or le.last_valid ~= is_valid then
-        le.last_minp  = {x = minp.x, y = minp.y, z = minp.z}
-        le.last_maxp  = {x = maxp.x, y = maxp.y, z = maxp.z}
-        le.last_valid = is_valid
-
+        le.last_minp, le.last_maxp, le.last_valid = {x = minp.x, y = minp.y, z = minp.z}, {x = maxp.x, y = maxp.y, z = maxp.z}, is_valid
         local col = is_valid and CONFIG.PREVIEW_VALID_COLOR or CONFIG.PREVIEW_INVALID_COLOR
         obj:set_properties({
-            visual_size = {
-                x = visual_size.x + 0.01,
-                y = visual_size.y + 0.01,
-                z = visual_size.z + 0.01,
-            },
+            visual_size = {x = visual_size.x + 0.01, y = visual_size.y + 0.01, z = visual_size.z + 0.01},
             textures = build_aligned_box_textures(minp, maxp, col, true),
         })
     end
@@ -631,9 +837,7 @@ core.register_globalstep(function(dtime)
             remove_player_preview(pname)
         else
             local target_pos = get_player_target_pos(player, true)
-            if target_pos then
-                update_player_preview(player, pname, sel.pos1, target_pos)
-            end
+            if target_pos then update_player_preview(player, pname, sel.pos1, target_pos) end
         end
     end
 end)
@@ -644,316 +848,42 @@ core.register_on_leaveplayer(function(player)
     remove_player_preview(pname)
 end)
 
--- =========================================================
--- TRANSITIVE MULTI-SEGMENT CONTRAPTION & STORAGE API
--- =========================================================
-local function spawn_or_replace_glue_box(minp, maxp)
-    for self, _ in pairs(active_glue_boxes) do
+function kinetica.create_super_glue_box(minp, maxp)
+    if not kinetica.api or not kinetica.api.contraptions then return nil end
+    for self, _ in pairs(kinetica.api.contraptions.active_glue_boxes) do
         if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            if bounds_equal(self.minp, self.maxp, minp, maxp) then
-                return self.object
-            end
+            if bounds_equal(self.minp, self.maxp, minp, maxp) then return self.object end
         else
-            active_glue_boxes[self] = nil
+            kinetica.api.contraptions.active_glue_boxes[self] = nil
         end
     end
-
     local _, _, center = compute_glue_bounds(minp, maxp)
     local obj = core.add_entity(center, GLUE_ENTITY_NAME, core.serialize({minp = minp, maxp = maxp}))
     if obj and obj:get_luaentity() then
         local le = obj:get_luaentity()
-        le.minp = {x = minp.x, y = minp.y, z = minp.z}
-        le.maxp = {x = maxp.x, y = maxp.y, z = maxp.z}
-        active_glue_boxes[le] = true
+        le.minp, le.maxp = {x = minp.x, y = minp.y, z = minp.z}, {x = maxp.x, y = maxp.y, z = maxp.z}
+        kinetica.api.contraptions.active_glue_boxes[le] = true
         apply_glue_box_visuals(le)
+        update_glue_box_parent_power(le)
     end
     return obj
 end
-kinetica.create_super_glue_box = spawn_or_replace_glue_box
-
-function kinetica.get_glue_boxes_at(pos)
-    local p    = vector.round(pos)
-    local list = {}
-    for self, _ in pairs(active_glue_boxes) do
-        if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            if is_pos_inside_bounds(p, self.minp, self.maxp) then
-                list[#list + 1] = self
-            end
-        else
-            active_glue_boxes[self] = nil
-        end
-    end
-    return list
-end
-
--- Transitive BFS across ALL overlapping Super Glue boxes so L-shapes, T-shapes, and multi-segments connect!
-function kinetica.get_glued_cluster_positions(start_pos)
-    local p0          = vector.round(start_pos)
-    local results     = {}
-    local visited_pos = {}
-    local visited_box = {}
-    local pos_queue   = {}
-
-    local initial_boxes = kinetica.get_glue_boxes_at(p0)
-    if #initial_boxes == 0 then
-        return results
-    end
-
-    local p0_hash = core.hash_node_position(p0)
-    visited_pos[p0_hash] = true
-    pos_queue[1] = p0
-
-    local n0 = core.get_node(p0).name
-    if n0 ~= "air" and n0 ~= "ignore" then
-        results[#results + 1] = p0
-    end
-
-    local head = 1
-    while head <= #pos_queue and #results < CONFIG.MAX_GLUE_VOLUME do
-        local cur = pos_queue[head]
-        head = head + 1
-
-        for self, _ in pairs(active_glue_boxes) do
-            if not visited_box[self] and self.object and self.object:get_luaentity() and self.minp and self.maxp then
-                if is_pos_inside_bounds(cur, self.minp, self.maxp) then
-                    visited_box[self] = true
-                    for x = self.minp.x, self.maxp.x do
-                        for y = self.minp.y, self.maxp.y do
-                            for z = self.minp.z, self.maxp.z do
-                                local bp = {x = x, y = y, z = z}
-                                local hk = core.hash_node_position(bp)
-                                if not visited_pos[hk] then
-                                    visited_pos[hk] = true
-                                    local nn = core.get_node(bp).name
-                                    if nn ~= "air" and nn ~= "ignore" then
-                                        results[#results + 1]   = bp
-                                        pos_queue[#pos_queue+1] = bp
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return results
-end
-
-function kinetica.are_positions_glued(pos1, pos2)
-    local p1 = vector.round(pos1)
-    local p2 = vector.round(pos2)
-    for self, _ in pairs(active_glue_boxes) do
-        if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            if is_pos_inside_bounds(p1, self.minp, self.maxp) and
-               is_pos_inside_bounds(p2, self.minp, self.maxp) then
-                return true
-            end
-        else
-            active_glue_boxes[self] = nil
-        end
-    end
-
-    local cluster = kinetica.get_glued_cluster_positions(p1)
-    local p2_hash = core.hash_node_position(p2)
-    for _, cp in ipairs(cluster) do
-        if core.hash_node_position(cp) == p2_hash then
-            return true
-        end
-    end
-    return false
-end
-kinetica.is_glued_together = kinetica.are_positions_glued
-
-function kinetica.shift_glue_boxes_in_volume(moved_positions, move_dir)
-    if not moved_positions or not move_dir then return end
-    local moved_hashes = {}
-    for _, mp in ipairs(moved_positions) do
-        moved_hashes[core.hash_node_position(vector.round(mp))] = true
-    end
-
-    for self, _ in pairs(active_glue_boxes) do
-        if self.object and self.object:get_luaentity() and self.minp and self.maxp then
-            local touches = false
-            for x = self.minp.x, self.maxp.x do
-                for y = self.minp.y, self.maxp.y do
-                    for z = self.minp.z, self.maxp.z do
-                        if moved_hashes[core.hash_node_position({x = x, y = y, z = z})] then
-                            touches = true
-                            break
-                        end
-                    end
-                    if touches then break end
-                end
-                if touches then break end
-            end
-
-            if touches then
-                self.minp = vector.add(self.minp, move_dir)
-                self.maxp = vector.add(self.maxp, move_dir)
-                apply_glue_box_visuals(self)
-            end
-        else
-            active_glue_boxes[self] = nil
-        end
-    end
-end
 
 -- =========================================================
--- GLUED CONTRAPTION SHARED STORAGE ROUTING (DRILLS, SAWS, ETC.)
--- =========================================================
-local function is_contraption_harvester_node(name)
-    if not name or name == "air" then return false end
-    if kinetica.is_mechanical_drill and kinetica.is_mechanical_drill(name) then
-        return true
-    end
-    if kinetica.is_mechanical_saw and kinetica.is_mechanical_saw(name) then
-        return true
-    end
-    if string.find(name, "kinetica:mechanical_drill", 1, true) or
-       string.find(name, "kinetica:mechanical_saw", 1, true) or
-       string.find(name, "kinetica:harvester", 1, true) or
-       string.find(name, "kinetica:plough", 1, true) then
-        return true
-    end
-    return false
-end
-
-local function try_insert_stack_into_glued_storage(dest_pos, stack)
-    if not stack or stack:is_empty() then
-        return ItemStack(""), false
-    end
-
-    local dnode = core.get_node(dest_pos)
-    local dname = dnode.name
-    if dname == "air" or dname == "ignore" or is_contraption_harvester_node(dname) then
-        return stack, false
-    end
-
-    local dmeta = core.get_meta(dest_pos)
-    local dinv  = dmeta and dmeta:get_inventory()
-    if dinv then
-        for _, listname in ipairs({"main", "input", "src", "contents"}) do
-            if dinv:get_size(listname) > 0 and dinv:room_for_item(listname, stack) then
-                local leftover = dinv:add_item(listname, stack)
-                local ct = core.get_node_timer(dest_pos)
-                if ct and not ct:is_started() then ct:start(0.20) end
-                if mcl_redstone and mcl_redstone.update_comparators then
-                    pcall(mcl_redstone.update_comparators, vector.new(dest_pos.x, dest_pos.y, dest_pos.z))
-                end
-                return leftover, true
-            end
-        end
-    end
-
-    if dname == "kinetica:depot" or core.get_item_group(dname, "kinetica_depot") > 0 then
-        if dinv and dinv:get_size("output") > 0 and dinv:room_for_item("output", stack) then
-            local leftover = dinv:add_item("output", stack)
-            local dt = core.get_node_timer(dest_pos)
-            if dt and not dt:is_started() then dt:start(0.20) end
-            return leftover, true
-        end
-    end
-
-    return stack, false
-end
-
--- Routes an ItemStack into any Chest/Barrel/Storage glued to the same contraption as `harvester_pos`
-function kinetica.try_store_in_glued_contraption(harvester_pos, stack)
-    stack = ItemStack(stack)
-    if stack:is_empty() then return stack, true end
-
-    local hnode = core.get_node(harvester_pos)
-    if kinetica.is_mechanical_drill and kinetica.is_mechanical_drill(hnode.name) then
-        if core.get_meta(harvester_pos):get_int("storage_mode") == 0 then
-            return stack, false
-        end
-    end
-
-    local cluster = kinetica.get_glued_cluster_positions(harvester_pos)
-    if #cluster == 0 then
-        return stack, false
-    end
-
-    local stored_any = false
-    for _, cpos in ipairs(cluster) do
-        local leftover, did_store = try_insert_stack_into_glued_storage(cpos, stack)
-        if did_store then
-            stored_any = true
-            stack      = leftover
-            if stack:is_empty() then
-                break
-            end
-        end
-    end
-
-    return stack, stored_any
-end
-
--- Intercepts drops spawned by glued Drills/Saws (`core.add_item`) and routes them into glued Chests!
-local in_glue_add_item_hook = false
-local orig_core_add_item    = core.add_item
-
-function core.add_item(pos, item)
-    if not in_glue_add_item_hook and pos and item and next(active_glue_boxes) then
-        local stack = ItemStack(item)
-        if not stack:is_empty() then
-            local rpos = vector.round(pos)
-            local harvester_pos = nil
-
-            -- Check `rpos` and its 6 neighbors for a glued Drill, Saw, or Harvester
-            if is_contraption_harvester_node(core.get_node(rpos).name) and #kinetica.get_glue_boxes_at(rpos) > 0 then
-                harvester_pos = rpos
-            else
-                for _, d in ipairs(ALL_6_DIRS) do
-                    local np = {x = rpos.x + d.x, y = rpos.y + d.y, z = rpos.z + d.z}
-                    if is_contraption_harvester_node(core.get_node(np).name) and #kinetica.get_glue_boxes_at(np) > 0 then
-                        harvester_pos = np
-                        break
-                    end
-                end
-            end
-
-            if harvester_pos then
-                in_glue_add_item_hook = true
-                local leftover, did_store = kinetica.try_store_in_glued_contraption(harvester_pos, stack)
-                in_glue_add_item_hook = false
-
-                if did_store then
-                    if leftover:is_empty() then
-                        return nil
-                    end
-                    return orig_core_add_item(pos, leftover)
-                end
-            end
-        end
-    end
-    return orig_core_add_item(pos, item)
-end
-
--- =========================================================
--- SUPER GLUE TOOL INTERACTION HANDLERS (NO RECURSION!)
+-- SUPER GLUE TOOL INTERACTION HANDLERS 
 -- =========================================================
 local function handle_glue_rightclick(itemstack, player, pointed_thing)
-    if not player or not player:is_player() then
-        return itemstack
-    end
+    if not player or not player:is_player() then return itemstack end
     local pname = player:get_player_name()
     local sel   = player_selections[pname]
 
-    -- STEP 1: Starting Corner 1 requires clicking a mandatory solid block!
     if not sel then
         local target_pos = nil
         if pointed_thing and pointed_thing.type == "node" and pointed_thing.under then
             local nn = core.get_node(pointed_thing.under).name
-            if nn ~= "air" and nn ~= "ignore" then
-                target_pos = vector.round(pointed_thing.under)
-            end
+            if nn ~= "air" and nn ~= "ignore" then target_pos = vector.round(pointed_thing.under) end
         end
-        if not target_pos then
-            target_pos = get_player_target_pos(player, false)
-        end
+        if not target_pos then target_pos = get_player_target_pos(player, false) end
 
         if not target_pos then
             core.chat_send_player(pname, "[Kinetica] Right-click a solid block to start Super Glue Corner 1!")
@@ -976,19 +906,10 @@ local function handle_glue_rightclick(itemstack, player, pointed_thing)
         return itemstack
     end
 
-    -- STEP 2: Confirming Corner 2 works on ANY block OR in open air!
-    local end_pos = nil
-    if pointed_thing and pointed_thing.type == "node" and pointed_thing.under then
-        end_pos = vector.round(pointed_thing.under)
-    else
-        end_pos = get_player_target_pos(player, true)
-    end
+    local end_pos = (pointed_thing and pointed_thing.type == "node" and pointed_thing.under) and vector.round(pointed_thing.under) or get_player_target_pos(player, true)
+    if not end_pos then return itemstack end
 
-    if not end_pos then
-        return itemstack
-    end
-
-    local minp, maxp, _, _, _, volume, is_valid, err_msg = compute_glue_bounds(sel.pos1, end_pos)
+    local minp, maxp, _, _, volume, is_valid, err_msg = compute_glue_bounds(sel.pos1, end_pos)
     if not is_valid then
         play_glue_sound(end_pos, 0.65)
         core.chat_send_player(pname, "[Kinetica] " .. (err_msg or "Invalid Super Glue region!"))
@@ -1003,31 +924,21 @@ local function handle_glue_rightclick(itemstack, player, pointed_thing)
     player_selections[pname] = nil
     remove_player_preview(pname)
 
-    spawn_or_replace_glue_box(minp, maxp)
+    kinetica.create_super_glue_box(minp, maxp)
     spawn_glue_particles(minp, maxp, CONFIG.GLUE_COLOR, 30)
     play_glue_sound(end_pos, 1.05)
 
-    local sx = (maxp.x - minp.x) + 1
-    local sy = (maxp.y - minp.y) + 1
-    local sz = (maxp.z - minp.z) + 1
-    core.chat_send_player(pname, string.format(
-        "[Kinetica] Super Glued %dx%dx%d region (%d block%s)!",
-        sx, sy, sz, volume, (volume == 1) and "" or "s"
-    ))
+    local sx, sy, sz = (maxp.x - minp.x) + 1, (maxp.y - minp.y) + 1, (maxp.z - minp.z) + 1
+    core.chat_send_player(pname, string.format("[Kinetica] Super Glued %dx%dx%d region (%d block%s)!", sx, sy, sz, volume, (volume == 1) and "" or "s"))
 
-    if not core.is_creative_enabled(pname) then
-        itemstack:add_wear(math.floor(65535 / CONFIG.SUPER_GLUE_USES))
-    end
+    if not core.is_creative_enabled(pname) then itemstack:add_wear(math.floor(65535 / CONFIG.SUPER_GLUE_USES)) end
     return itemstack
 end
 
 local function handle_glue_leftclick(itemstack, player, pointed_thing)
-    if not player or not player:is_player() then
-        return itemstack
-    end
+    if not player or not player:is_player() then return itemstack end
     local pname = player:get_player_name()
 
-    -- 1. If currently selecting a box, left-clicking cancels the selection
     if player_selections[pname] then
         player_selections[pname] = nil
         remove_player_preview(pname)
@@ -1035,13 +946,10 @@ local function handle_glue_leftclick(itemstack, player, pointed_thing)
         return itemstack
     end
 
-    -- 2. Raycast against all active glue boxes so you can left-click any glue box (even in mid-air) to remove it!
     local hit_box = find_raycasted_glue_box(player)
-    if not hit_box and pointed_thing and pointed_thing.type == "node" and pointed_thing.under then
-        local boxes = kinetica.get_glue_boxes_at(pointed_thing.under)
-        if #boxes > 0 then
-            hit_box = boxes[#boxes]
-        end
+    if not hit_box and pointed_thing and pointed_thing.type == "node" and pointed_thing.under and kinetica.api and kinetica.api.contraptions then
+        local boxes = kinetica.api.contraptions.get_glue_boxes_at(pointed_thing.under)
+        if #boxes > 0 then hit_box = boxes[#boxes] end
     end
 
     if hit_box then
@@ -1055,19 +963,14 @@ local function handle_glue_leftclick(itemstack, player, pointed_thing)
     return itemstack
 end
 
--- =========================================================
--- REGISTER SUPER GLUE TOOL & CRAFTING RECIPES
--- =========================================================
-local glue_icon = build_super_glue_icon()
-
 core.register_tool(GLUE_TOOL_NAME, {
     description = "Super Glue\n" ..
                   "• Right-Click a block to start Corner 1, then Right-Click any block or in the air to glue!\n" ..
                   "• Overlap multiple glue boxes to build L-shapes, T-shapes, and custom contraptions.\n" ..
                   "• Glued Drills & Saws automatically store mined items into any Chest inside the glue!\n" ..
                   "• Left-Click a glued region while holding Super Glue to remove it.",
-    inventory_image  = glue_icon,
-    wield_image      = glue_icon,
+    inventory_image  = build_super_glue_icon(),
+    wield_image      = build_super_glue_icon(),
     groups           = {kinetica_super_glue = 1},
     on_place         = handle_glue_rightclick,
     on_secondary_use = handle_glue_rightclick,

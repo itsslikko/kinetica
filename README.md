@@ -9,7 +9,7 @@ Harness the power of water and steam to generate Rotational Power (KU), transmit
 **Tier 1: Basic Kinetics (Andesite & Wood)**
 *   **Andesite Alloy:** The foundational binder, crafted from Andesite and Iron Ingots.
 *   **Water Wheels:** Generate early-game kinetic power from flowing water.
-*   **Shafts, Gearboxes, Gearshifts & Chain Drives:** Transmit power around corners, vertically, and across wide factory floors, or reverse rotational direction on demand with Redstone-controlled Gearshifts.
+*   **Shafts, Gearboxes, Variable Gearboxes, Gearshifts & Chain Drives:** Transmit power around corners, vertically, and across wide factory floors. Use Variable Gearboxes to adjust speed/torque ratios or act as a clutch, and reverse rotational direction on demand with Redstone-controlled Gearshifts.
 
 **Tier 2: Heavy Industry (Iron)**
 *   **Mechanical Press:** The gateway to mid-game. Stamp raw Iron, Copper, and Gold ingots into sheets, or compact 9x nuggets into ingots automatically.
@@ -28,12 +28,14 @@ Harness the power of water and steam to generate Rotational Power (KU), transmit
 *   **Portable Interfaces:** Bridge static automation lines with moving contraptions (and Steampunk Blimps) to automatically refuel, repair, and transfer fluids and cargo on the fly.
 *   **Deployers:** Simulate player actions to automatically place blocks, use tools, and interact with the world.
 
-## The Engineer's Glasses
-Never guess why a machine stopped working. Craft the **Kinetic Engineer's Glasses** (Glass + Gold Ingot) and wear them in your helmet slot. Looking at any kinetic machine will display a live left-side HUD showing:
-*   Current RPM and network stress.
-*   Available vs. Consumed Kinetic Units (KU).
-*   Live item filtering, batch sizes, and flow direction for Funnels.
-*   Contents and capacities of multi-block Item Vaults.
+## Documentation & Telemetry
+
+*   **Kinetica Engineering Guide:** Craft the Guide Book (Andesite Alloy + Book) or type `/kinetica` to access a comprehensive in-game manual. Features dynamic stress/RPM calculations and live 3D isometric previews of every machine!
+*   **Engineer's Glasses:** Never guess why a machine stopped working. Craft the Kinetic Engineer's Glasses (Glass + Gold Ingot) and wear them in your helmet slot. Looking at any kinetic machine will display a live left-side HUD showing:
+    *   Current RPM and network stress.
+    *   Available vs. Consumed Kinetic Units (KU).
+    *   Live item filtering, batch sizes, and flow direction for Funnels.
+    *   Contents and capacities of multi-block Item Vaults.
 
 ## Dependencies
 This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relies on standard APIs (`mcl_core`, `mcl_sounds`, `mcl_formspec`, `mcl_experience`, `mcl_pistons`, `mcl_redstone`).
@@ -47,8 +49,9 @@ This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relie
 *   `kinetica_water_wheel_big.obj`: Original 3D model created by **Slikko** (CC BY-SA 4.0).
 
 **Textures:**
-*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), speed controller, gearbox, gearshift, chain drive, encased fan, chute, feeder, water pump, steam turbine, belts, shafts, glue, vaults, portable interfaces, and engineer's glasses were hand-painted by **Slikko**.
-*   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, `kinetica_water_wheel_core.png`, and the steam generator textures are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors).
+*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), variable gearboxes, gearboxes, gearshifts, chain drives, encased fans, chutes, feeders, water pumps, steam turbines, belts, shafts, glue, vaults, portable interfaces, `kinetica_guide_book.png`, `kinetica_waterwheel_panel.png`, and engineer's glasses were hand-painted by **Slikko**.
+
+*   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, and the steam generator textures are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors).
 
 **Audio:**
 *   **Original Audio (by Slikko — CC BY-SA 4.0):** Drills, crushers, saws, fans, steam generators, water pumps, and turbines.

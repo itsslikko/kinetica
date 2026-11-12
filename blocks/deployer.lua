@@ -568,7 +568,7 @@ local function execute_deployer_cycle(pos, node)
 
     local target_node = core.get_node(target_pos)
 
-    -- 1. Dedicated Bucket Fill / Empty Handling (No Infinite Water Spam)
+    -- 1. Dedicated Bucket Fill / Empty Handling
     local bucket_res = handle_bucket_action(pos, inv, hand_stack, target_pos, target_node)
     if bucket_res then
         if bucket_res == "Emptied Bucket" or bucket_res == "Filled Bucket" then
@@ -636,7 +636,7 @@ local function execute_deployer_cycle(pos, node)
         above = {x = target_pos.x - front.x, y = target_pos.y - front.y, z = target_pos.z - front.z},
     }
 
-    -- 3. Block Shearing (Leaves, Vines, Cobwebs)
+    -- 3. Block Shearing
     if CONFIG.ALLOW_SHEARING and is_shears_item(item_name) and target_node.name ~= "air" then
         if core.get_item_group(target_node.name, "leaves") > 0 or
            core.get_item_group(target_node.name, "shearsy") > 0 or
@@ -652,7 +652,7 @@ local function execute_deployer_cycle(pos, node)
         end
     end
 
-    -- 4. Empty Hand Block Interaction (Buttons, Levers, Doors)
+    -- 4. Empty Hand Block Interaction
     if CONFIG.ALLOW_NODE_INTERACTION and target_node.name ~= "air" and hand_stack:is_empty() then
         if target_def and type(target_def.on_rightclick) == "function" then
             local mock, _, drops = create_mock_player(pos, front, owner, hand_stack)
@@ -876,21 +876,27 @@ local function format_deployer_glasses_info(pos, node)
     local p1 = inv:get_stack("profit", 1)
     local p2 = inv:get_stack("profit", 2)
 
+    local T = kinetica.api and kinetica.api.telemetry or nil
+    if not T then return "" end
+
     return table.concat({
-        "=== KINETIC GLASSES TELEMETRY ===",
-        "Machine: Mechanical Deployer",
-        string.format("State:   %s (%s)", active and "ACTIVE" or "IDLE", act_str),
-        string.format("Speed:   %.1f RPM (Min %d RPM)", active and rpm or 0, CONFIG.MIN_RPM),
-        string.format("Stress:  -%d KU Load  (%d / %d KU Avail)", active and demand or 0, avail, supply),
-        "---------------------------------",
-        "Held in Hand:  " .. format_slot_summary(inv:get_stack("hand", 1)),
-        "Profit Slot 1: " .. format_slot_summary(p1),
-        "Profit Slot 2: " .. format_slot_summary(p2),
+        "┌─ ENGINEER'S GLASSES ──────────────",
+        "│  Machine: Mechanical Deployer",
+        "│  ● STATE: " .. string.format("%s (%s)", active and "ACTIVE" or "IDLE", act_str),
+        "├─ KINETIC NETWORK ─────────────────",
+        T.kv_row("Speed",   string.format("%.1f RPM (Min %d RPM)", active and rpm or 0, CONFIG.MIN_RPM)),
+        T.kv_row("Stress",  string.format("-%d KU Load (%d / %d KU Avail)", active and demand or 0, avail, supply)),
+        "├─ INVENTORY ───────────────────────",
+        T.kv_row("Held",    format_slot_summary(inv:get_stack("hand", 1))),
+        T.kv_row("Profit 1", format_slot_summary(p1)),
+        T.kv_row("Profit 2", format_slot_summary(p2)),
+        "└───────────────────────────────────",
     }, "\n")
 end
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-kinetica._glasses_formatters[IDLE_NAME] = format_deployer_glasses_info
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE_NAME, format_deployer_glasses_info)
+end
 
 local function update_deployer_infotext(pos, meta, is_active, action_str)
     meta:set_string("glasses_info", format_deployer_glasses_info(pos, core.get_node(pos)))
@@ -940,8 +946,12 @@ local function deployer_timer(pos)
     local meta = core.get_meta(pos)
     local node = core.get_node(pos)
 
-    if now >= meta:get_int("lit_until") and kinetica.update_network then
-        kinetica.update_network(pos)
+    if now >= meta:get_int("lit_until") then
+        if kinetica.api and kinetica.api.network.update then
+            kinetica.api.network.update(pos)
+        elseif kinetica.update_network then
+            kinetica.update_network(pos)
+        end
         node = core.get_node(pos)
     end
 
@@ -949,10 +959,15 @@ local function deployer_timer(pos)
     local supply_ku = meta:get_int("network_supply_ku")
     local spin_dir  = meta:get_int("spin_dir")
 
-    if supply_ku <= 0 or rpm < CONFIG.MIN_RPM or now >= meta:get_int("lit_until") then
+    local is_powered, uni_rpm, uni_sup, uni_ava, uni_spin = kinetica.get_node_power(pos, meta)
+    if not is_powered or uni_rpm < CONFIG.MIN_RPM then
         set_deployer_idle(pos, node)
         return false
     end
+    -- Use the unified power values
+    rpm = uni_rpm
+    supply_ku = uni_sup
+    spin_dir = uni_spin
 
     local target = get_active_deployer_node_name(node.param2, spin_dir, rpm, false)
     if strip_ext_suffix(node.name) ~= target then
@@ -1108,7 +1123,9 @@ local function on_after_dig(pos, _, oldmetadata)
             end
         end
     end
-    if kinetica.schedule_network_update then
+    if kinetica.api and kinetica.api.network.schedule_update then
+        kinetica.api.network.schedule_update(pos)
+    elseif kinetica.schedule_network_update then
         kinetica.schedule_network_update(pos)
     end
 end
@@ -1175,7 +1192,9 @@ local function register_deployer_variant(node_name, desc, back_tile, is_base, is
             meta:set_string("formspec", "")
             ensure_deployer_inventory(meta)
             set_deployer_idle(pos, core.get_node(pos))
-            if kinetica.schedule_network_update then
+            if kinetica.api and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(pos)
+            elseif kinetica.schedule_network_update then
                 kinetica.schedule_network_update(pos)
             end
         end or nil,

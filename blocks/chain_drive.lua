@@ -151,116 +151,11 @@ local function sync_chain_drive_tier_and_text(pos)
     end
 end
 
-kinetica._tier_node_map      = kinetica._tier_node_map      or {}
-kinetica._tier_sync_funcs    = kinetica._tier_sync_funcs    or {}
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
-kinetica._tier_sync_funcs[IDLE]    = sync_chain_drive_tier_and_text
-kinetica._glasses_formatters[IDLE] = format_chain_drive_glasses_info
-
-if not kinetica.get_glasses_info then
-    function kinetica.get_glasses_info(pos, node)
-        node = node or raw_get_node(pos)
-        for prefix, fn in pairs(kinetica._glasses_formatters) do
-            if node.name == prefix or string.sub(node.name or "", 1, #prefix + 1) == (prefix .. "_") then
-                return fn(pos, node)
-            end
-        end
-        return core.get_meta(pos):get_string("glasses_info")
-    end
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE, format_chain_drive_glasses_info)
 end
-
-local function install_tier_solver_bridge()
-    if kinetica._tier_bridge_installed or not kinetica.update_network then
-        return
-    end
-    kinetica._tier_bridge_installed = true
-
-    local orig_update_network = kinetica.update_network
-    local orig_set_node_idle  = kinetica.set_node_idle
-    local orig_has_axle_port  = kinetica.has_axle_port
-    local in_solver_depth     = 0
-    local touched_positions   = {}
-
-    if orig_has_axle_port then
-        function kinetica.has_axle_port(node, d)
-            if node and kinetica._tier_node_map[node.name] then
-                node = {name = kinetica._tier_node_map[node.name].canonical, param2 = node.param2}
-            end
-            return orig_has_axle_port(node, d)
-        end
-    end
-
-    function core.get_node(pos)
-        local n = raw_get_node(pos)
-        if in_solver_depth > 0 and n and kinetica._tier_node_map[n.name] then
-            local info = kinetica._tier_node_map[n.name]
-            touched_positions[core.hash_node_position(pos)] = {
-                pos  = {x = pos.x, y = pos.y, z = pos.z},
-                base = info.base,
-            }
-            return {name = info.canonical, param1 = n.param1, param2 = n.param2}
-        end
-        return n
-    end
-    minetest.get_node = core.get_node
-
-    function core.swap_node(pos, node)
-        raw_swap_node(pos, node)
-        if in_solver_depth > 0 and node and node.name then
-            for base_prefix, _ in pairs(kinetica._tier_sync_funcs) do
-                if node.name == base_prefix or string.sub(node.name, 1, #base_prefix + 1) == (base_prefix .. "_") then
-                    touched_positions[core.hash_node_position(pos)] = {
-                        pos  = {x = pos.x, y = pos.y, z = pos.z},
-                        base = base_prefix,
-                    }
-                end
-            end
-        end
-    end
-    minetest.swap_node = core.swap_node
-
-    if orig_set_node_idle then
-        function kinetica.set_node_idle(pos, node, reason)
-            in_solver_depth = in_solver_depth + 1
-            if node and kinetica._tier_node_map[node.name] then
-                node = {name = kinetica._tier_node_map[node.name].canonical, param2 = node.param2}
-            end
-            orig_set_node_idle(pos, node, clean_cw_ccw_text(reason))
-            in_solver_depth = in_solver_depth - 1
-
-            local real_n = raw_get_node(pos)
-            for base_prefix, sync_fn in pairs(kinetica._tier_sync_funcs) do
-                if real_n.name == base_prefix or string.sub(real_n.name, 1, #base_prefix + 1) == (base_prefix .. "_") then
-                    sync_fn(pos)
-                end
-            end
-        end
-    end
-
-    function kinetica.update_network(pos)
-        in_solver_depth = in_solver_depth + 1
-        orig_update_network(pos)
-        in_solver_depth = in_solver_depth - 1
-
-        if in_solver_depth == 0 and next(touched_positions) then
-            local batch = touched_positions
-            touched_positions = {}
-            for _, entry in pairs(batch) do
-                local sync_fn = kinetica._tier_sync_funcs[entry.base]
-                if sync_fn then
-                    sync_fn(entry.pos)
-                end
-            end
-        end
-    end
-end
-
-install_tier_solver_bridge()
-core.register_on_mods_loaded(install_tier_solver_bridge)
 
 local function chain_drive_timer(pos, elapsed)
-    install_tier_solver_bridge()
     local now  = math.floor(core.get_gametime())
     local meta = core.get_meta(pos)
 
@@ -269,8 +164,8 @@ local function chain_drive_timer(pos, elapsed)
         return true
     end
 
-    if kinetica.update_network then
-        kinetica.update_network(pos)
+    if kinetica.api and kinetica.api.network.update then
+        kinetica.api.network.update(pos)
     end
 
     if math.floor(core.get_gametime()) < meta:get_int("lit_until") then
@@ -404,14 +299,15 @@ local function register_chain_drive_variant(node_name, back_tile, front_tile, is
                 kinetica.set_node_idle(pos, raw_get_node(pos))
             end
             sync_chain_drive_tier_and_text(pos)
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
+            
+            if kinetica.api and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(pos)
             end
         end or nil,
 
         after_dig_node = function(pos)
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
+            if kinetica.api and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(pos)
             end
         end,
 
@@ -426,9 +322,6 @@ local med_ccw = make_chain_overlay(true,  0.24)
 register_chain_drive_variant(ACT_CW,  med_ccw, med_cw,  false)
 register_chain_drive_variant(ACT_CCW, med_cw,  med_ccw, false)
 
-kinetica._tier_node_map[ACT_CW]  = {canonical = ACT_CW,  base = IDLE}
-kinetica._tier_node_map[ACT_CCW] = {canonical = ACT_CCW, base = IDLE}
-
 for _, tier in ipairs(CONFIG.ANIM_TIERS) do
     local t_cw  = make_chain_overlay(false, tier.length)
     local t_ccw = make_chain_overlay(true,  tier.length)
@@ -438,9 +331,6 @@ for _, tier in ipairs(CONFIG.ANIM_TIERS) do
 
     register_chain_drive_variant(name_cw,  t_ccw, t_cw,  false)
     register_chain_drive_variant(name_ccw, t_cw,  t_ccw, false)
-
-    kinetica._tier_node_map[name_cw]  = {canonical = ACT_CW,  base = IDLE}
-    kinetica._tier_node_map[name_ccw] = {canonical = ACT_CCW, base = IDLE}
 end
 
 core.register_lbm({

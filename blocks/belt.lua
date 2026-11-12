@@ -77,7 +77,7 @@ local function build_create_belt_item_icon()
     local dark_rim    = px("#141619", 245, 1, 1) -- 16x16 base
     local rubber_band = px("#2c3038", 235, 1, 2) -- 16x8 horizontal band
     local tread_light = px("#454b56", 225, 1, 4) -- 16x4 inner belt surface
-    local hole_ roller= px("#6e7685", 230, 8, 8) -- 2x2 roller axle hubs
+    local hole_roller = px("#6e7685", 230, 8, 8) -- 2x2 roller axle hubs
     local inner_gap   = px("#181a1f", 250, 2, 8) -- 8x2 dark center gap
     local corner_cut  = px("#000000", 0,   8, 8)
 
@@ -946,8 +946,6 @@ local function format_belt_mode_label(shape)
     return "Flat"
 end
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
 local function format_belt_glasses_info(pos, node)
     local meta      = core.get_meta(pos)
     local shape     = get_belt_shape(node.name, meta)
@@ -974,18 +972,8 @@ local function format_belt_glasses_info(pos, node)
     }, "\n")
 end
 
-kinetica._glasses_formatters[IDLE_NAME] = format_belt_glasses_info
-
-if not kinetica.get_glasses_info then
-    function kinetica.get_glasses_info(pos, node)
-        node = node or core.get_node(pos)
-        for prefix, fn in pairs(kinetica._glasses_formatters) do
-            if node.name == prefix or string.sub(node.name or "", 1, #prefix + 1) == (prefix .. "_") then
-                return fn(pos, node)
-            end
-        end
-        return core.get_meta(pos):get_string("glasses_info")
-    end
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE_NAME, format_belt_glasses_info)
 end
 
 local function update_single_belt_visual_and_timer(bpos, bnode, rpm, spin_dir, is_relay)
@@ -1048,37 +1036,6 @@ local function get_connected_axle_neighbors(bpos, bnode)
         end
     end
     return neighbors
-end
-
-local function are_kinetic_nodes_coupled(cur_node, nnode, d, for_gen_trace)
-    local rev = {x = -d.x, y = -d.y, z = -d.z}
-
-    if kinetica.is_speed_controller and kinetica.is_speed_controller(nnode.name) then
-        local sc_in  = core.facedir_to_dir(nnode.param2 or 0) or {x = 0, y = 0, z = 1}
-        local sc_out = {x = -sc_in.x, y = -sc_in.y, z = -sc_in.z}
-        local want   = for_gen_trace and sc_out or sc_in
-        if rev.x == want.x and rev.y == want.y and rev.z == want.z then
-            if not kinetica.has_axle_port or kinetica.has_axle_port(cur_node, d) then
-                return true
-            end
-        end
-        return false
-    end
-
-    if kinetica.has_axle_port and
-       kinetica.has_axle_port(cur_node, d) and
-       kinetica.has_axle_port(nnode, rev) then
-        return true
-    elseif kinetica.is_chain_drive and
-           kinetica.is_chain_drive(cur_node.name) and
-           kinetica.is_chain_drive(nnode.name) then
-        local axA = kinetica.abs_axis(cur_node.param2)
-        local axB = kinetica.abs_axis(nnode.param2)
-        if axA.x == axB.x and axA.y == axB.y and axA.z == axB.z then
-            return true
-        end
-    end
-    return false
 end
 
 local function is_real_generator_node(pos, node)
@@ -1159,7 +1116,13 @@ local function pulley_reaches_real_generator(pulley_pos, pulley_node, own_span_h
                 if not visited[nk] then
                     local nnode = core.get_node(npos)
                     if kinetica.is_kinetic_node and kinetica.is_kinetic_node(nnode.name) then
-                        if are_kinetic_nodes_coupled(cur.node, nnode, d, true) then
+                        local is_coup = false
+                        if kinetica.api and kinetica.api.network.are_coupled then
+                            is_coup = kinetica.api.network.are_coupled(cur.node, nnode, d, cur.pos, npos)
+                        else
+                            is_coup = kinetica.are_nodes_coupled(cur.node, nnode, d, cur.pos, npos)
+                        end
+                        if is_coup then
                             visited[nk] = true
                             queue[#queue + 1] = {pos = npos, node = nnode}
                         end
@@ -1298,7 +1261,13 @@ local function compute_relay_pulley_downstream_demand_ku(pulley_pos, pulley_node
                     if not visited[nk] then
                         local nnode = core.get_node(npos)
                         if kinetica.is_kinetic_node and kinetica.is_kinetic_node(nnode.name) then
-                            if are_kinetic_nodes_coupled(cur.node, nnode, d, false) then
+                            local is_coup = false
+                            if kinetica.api and kinetica.api.network.are_coupled then
+                                is_coup = kinetica.api.network.are_coupled(cur.node, nnode, d, cur.pos, npos)
+                            else
+                                is_coup = kinetica.are_nodes_coupled(cur.node, nnode, d, cur.pos, npos)
+                            end
+                            if is_coup then
                                 visited[nk] = true
                                 queue[#queue + 1] = {pos = npos, node = nnode}
                             end
@@ -1346,11 +1315,17 @@ local function get_belt_span_total_demand_ku(pos, rpm)
 end
 
 local function notify_pulley_and_axle_neighbors(bpos, bnode)
-    if not kinetica.update_network then return end
     bnode = bnode or core.get_node(bpos)
-    kinetica.update_network(bpos)
-    for _, nb in ipairs(get_connected_axle_neighbors(bpos, bnode)) do
-        kinetica.update_network(nb.pos)
+    if kinetica.api and kinetica.api.network.update then
+        kinetica.api.network.update(bpos)
+        for _, nb in ipairs(get_connected_axle_neighbors(bpos, bnode)) do
+            kinetica.api.network.update(nb.pos)
+        end
+    elseif kinetica.update_network then
+        kinetica.update_network(bpos)
+        for _, nb in ipairs(get_connected_axle_neighbors(bpos, bnode)) do
+            kinetica.update_network(nb.pos)
+        end
     end
 end
 
@@ -1437,7 +1412,9 @@ local function set_belt_idle(pos, node, reason_text)
         belt_relay_depth = belt_relay_depth + 1
         for _, rp in ipairs(active_relay_pulleys) do
             for _, nb in ipairs(get_connected_axle_neighbors(rp.pos, rp.node)) do
-                if kinetica.update_network then
+                if kinetica.api and kinetica.api.network.update then
+                    kinetica.api.network.update(nb.pos)
+                elseif kinetica.update_network then
                     kinetica.update_network(nb.pos)
                 end
             end
@@ -1500,12 +1477,17 @@ local function wake_belt(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_k
         return
     end
 
-    if conflict_shaft_pos and kinetica.break_conflicting_shaft then
-        if kinetica.break_conflicting_shaft(conflict_shaft_pos) then
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
+    if conflict_shaft_pos then
+        if kinetica.api and kinetica.api.network.break_conflicting_shaft then
+            if kinetica.api.network.break_conflicting_shaft(conflict_shaft_pos) then
+                kinetica.api.network.schedule_update(pos)
+                return
             end
-            return
+        elseif kinetica.break_conflicting_shaft then
+            if kinetica.break_conflicting_shaft(conflict_shaft_pos) then
+                kinetica.schedule_network_update(pos)
+                return
+            end
         end
     end
 
@@ -1633,7 +1615,14 @@ local function belt_timer(pos, elapsed)
         return false
     end
 
-    if kinetica.update_network then
+    local do_update = false
+    if kinetica.api and kinetica.api.network.update then
+        do_update = true
+    elseif kinetica.update_network then
+        do_update = true
+    end
+
+    if do_update then
         if now >= meta:get_int("lit_until") then
             refresh_entire_belt_span(pos)
             node = core.get_node(pos)
@@ -1984,7 +1973,9 @@ local function on_belt_after_dig(pos, oldnode, oldmetadata, digger)
     is_dismantling_belt = false
 
     for _, spos in ipairs(restored_shafts) do
-        if kinetica.update_network then
+        if kinetica.api and kinetica.api.network.update then
+            kinetica.api.network.update(spos)
+        elseif kinetica.update_network then
             kinetica.update_network(spos)
         end
     end
@@ -2067,7 +2058,10 @@ local function try_extend_or_insert_shaft_on_belt(pos, node, clicker, itemstack,
                     itemstack:take_item(1)
                 end
                 refresh_entire_belt_span(pos)
-                if kinetica.update_network then
+                
+                if kinetica.api and kinetica.api.network.update then
+                    kinetica.api.network.update(pointed_thing.above)
+                elseif kinetica.update_network then
                     kinetica.update_network(pointed_thing.above)
                 end
                 return true
@@ -2085,7 +2079,10 @@ local function try_extend_or_insert_shaft_on_belt(pos, node, clicker, itemstack,
                 itemstack:take_item(1)
             end
             refresh_entire_belt_span(pos)
-            if kinetica.update_network then
+            
+            if kinetica.api and kinetica.api.network.update then
+                kinetica.api.network.update(npos)
+            elseif kinetica.update_network then
                 kinetica.update_network(npos)
             end
             return true
@@ -2154,7 +2151,9 @@ local function on_belt_rightclick(pos, node, clicker, itemstack, pointed_thing)
             end
 
             for _, nb in ipairs(get_connected_axle_neighbors(pos, node)) do
-                if kinetica.update_network then
+                if kinetica.api and kinetica.api.network.update then
+                    kinetica.api.network.update(nb.pos)
+                elseif kinetica.update_network then
                     kinetica.update_network(nb.pos)
                 end
             end

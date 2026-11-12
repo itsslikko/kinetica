@@ -1,3 +1,4 @@
+-- kinetica/vault.lua
 kinetica = kinetica or {}
 
 local modname = core.get_current_modname() or "kinetica"
@@ -33,13 +34,6 @@ local ALL_6_DIRS = kinetica.directions or {
     {x =  0, y =  0, z = -1},
 }
 
-local HORIZ_DIRS = {
-    {x =  1, y = 0, z =  0},
-    {x = -1, y = 0, z =  0},
-    {x =  0, y = 0, z =  1},
-    {x =  0, y = 0, z = -1},
-}
-
 local function is_item_vault(name)
     return name == VAULT_NAME
 end
@@ -56,7 +50,6 @@ local function clean_item_label(item_name)
     local idef = core.registered_items[item_name]
     local raw  = (idef and (idef._tt_original_description or idef.short_description or idef.description)) or ""
 
-    -- 1. Resolve Luanti translation strings if available
     if raw ~= "" and core.get_translated_string then
         local ok, trans = pcall(core.get_translated_string, "", raw)
         if ok and type(trans) == "string" and trans ~= "" then
@@ -64,18 +57,15 @@ local function clean_item_label(item_name)
         end
     end
 
-    -- 2. Strip color codes & translation escape sequences (\27(T@...)\27E)
     if raw ~= "" and core.strip_colors then
         raw = core.strip_colors(raw)
     end
     raw = string.gsub(raw, "\27%([^)]*%)", "")
     raw = string.gsub(raw, "\27.", "")
 
-    -- 3. Take first non-empty line and trim
     local first_line = string.match(raw, "^%s*([^\r\n]+)") or ""
     first_line = string.gsub(first_line, "%s+$", "")
 
-    -- 4. Fallback: convert "mcl_core:cobblestone" -> "Cobblestone" if description was empty/escaped
     if first_line == "" or string.find(first_line, "^[%s%p]*$") then
         local short_id = string.match(item_name, ":(.+)$") or item_name
         short_id = string.gsub(short_id, "_", " ")
@@ -157,7 +147,6 @@ local function ensure_vault_inventory(pos)
     if inv:get_size("main") ~= CONFIG.SLOTS_PER_VAULT_BLOCK then
         inv:set_size("main", CONFIG.SLOTS_PER_VAULT_BLOCK)
     end
-    -- Also keep "dst" and "src" aliases synced for any Mineclonia hoppers that check furnace-style lists
     return meta, inv
 end
 
@@ -199,9 +188,7 @@ kinetica.get_vault_cluster = get_vault_cluster
 -- =========================================================
 -- EXTRACTION HELPER & MULTI-BLOCK POOLING
 -- =========================================================
--- Checks if a Vault block has an extractor (Chute/Hopper below, Funnel/PI on side)
 local function has_attached_extractor(vpos)
-    -- 1. Check below for Chute, Smart Chute, or Hopper
     local below_pos  = {x = vpos.x, y = vpos.y - 1, z = vpos.z}
     local below_name = raw_get_node(below_pos).name
     if (kinetica.is_chute and kinetica.is_chute(below_name)) or
@@ -214,7 +201,6 @@ local function has_attached_extractor(vpos)
         return true
     end
 
-    -- 2. Check all 6 sides for Portable Interface or Funnel
     for _, d in ipairs(ALL_6_DIRS) do
         local npos  = {x = vpos.x + d.x, y = vpos.y + d.y, z = vpos.z + d.z}
         local nnode = raw_get_node(npos)
@@ -236,7 +222,6 @@ local function has_attached_extractor(vpos)
     return false
 end
 
--- Feeds Mineclonia hoppers directly below the Vault if the hopper's own ABM hasn't pulled yet
 local function try_push_to_hopper_below(vpos, vinv)
     if vinv:is_empty("main") then return end
     local below_pos  = {x = vpos.x, y = vpos.y - 1, z = vpos.z}
@@ -269,17 +254,14 @@ local function try_push_to_hopper_below(vpos, vinv)
 end
 
 local function balance_vault_cluster(cluster)
-    -- Always assist any Hopper directly underneath a Vault block
     for _, entry in ipairs(cluster) do
         try_push_to_hopper_below(entry.pos, entry.inv)
     end
 
     if #cluster <= 1 then return end
 
-    -- 1. Prioritize filling any Vault block that has an attached Extractor (Funnel/Chute/Hopper/PI)
     for _, dst in ipairs(cluster) do
         if has_attached_extractor(dst.pos) then
-            -- Keep at least 2 stacks available in extractor-connected blocks whenever the cluster has items
             local occupied = 0
             local d_sz = dst.inv:get_size("main")
             for i = 1, d_sz do
@@ -308,7 +290,6 @@ local function balance_vault_cluster(cluster)
         end
     end
 
-    -- 2. Share at least 1 stack to any completely empty Vault block so newly placed extractors work immediately
     for _, dst in ipairs(cluster) do
         if dst.inv:is_empty("main") then
             for _, src in ipairs(cluster) do
@@ -328,7 +309,6 @@ local function balance_vault_cluster(cluster)
         end
     end
 
-    -- 3. Shift 1 stack out of any completely full Vault block so incoming Chutes/Funnels never jam
     for _, src in ipairs(cluster) do
         local has_empty_slot = false
         local sz = src.inv:get_size("main")
@@ -353,19 +333,8 @@ local function balance_vault_cluster(cluster)
 end
 
 -- =========================================================
--- ENGINEER'S GLASSES TELEMETRY (CLEAN ITEM NAMES + COUNTS)
+-- ENGINEER'S GLASSES TELEMETRY 
 -- =========================================================
-local function make_progress_bar(used, total)
-    local slots = 10
-    if not total or total <= 0 then
-        return "[" .. string.rep("░", slots) .. "] 0%"
-    end
-    local ratio  = math.min(1.0, math.max(0.0, (used or 0) / total))
-    local filled = math.floor(ratio * slots + 0.5)
-    local pct    = math.min(100, math.floor(ratio * 100 + 0.5))
-    return string.format("[%s%s] %d%%", string.rep("█", filled), string.rep("░", slots - filled), pct)
-end
-
 local function inspect_cluster_contents(cluster)
     local total_slots    = #cluster * CONFIG.SLOTS_PER_VAULT_BLOCK
     local used_slots     = 0
@@ -408,17 +377,6 @@ local function inspect_cluster_contents(cluster)
     return total_items, used_slots, total_slots, sorted
 end
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
-local LINE_TOP = "┌─ ENGINEER'S GLASSES ──────────────"
-local LINE_CAP = "├─ VAULT CAPACITY ──────────────────"
-local LINE_CNT = "├─ STORED ITEMS ────────────────────"
-local LINE_BOT = "└───────────────────────────────────"
-
-local function kv_row(label, value)
-    return string.format("│  %-11s: %s", label, tostring(value))
-end
-
 local function format_vault_glasses_info(pos, node)
     local cluster = get_vault_cluster(pos)
     local total_items, used_slots, total_slots, sorted_items = inspect_cluster_contents(cluster)
@@ -430,16 +388,19 @@ local function format_vault_glasses_info(pos, node)
         state_str = "STORING ITEMS"
     end
 
+    local T = kinetica.api and kinetica.api.telemetry or nil
+    if not T then return "" end
+
     local lines = {
-        LINE_TOP,
+        "┌─ ENGINEER'S GLASSES ──────────────",
         "│  Item Vault",
         "│  ● STATE    : " .. state_str,
-        LINE_CAP,
-        kv_row("Multi-Block", string.format("%d Connected Block%s", #cluster, #cluster == 1 and "" or "s")),
-        kv_row("Total Items", tostring(total_items)),
-        kv_row("Stacks Used", string.format("%d / %d", used_slots, total_slots)),
-        kv_row("Fill Level",  make_progress_bar(used_slots, total_slots)),
-        LINE_CNT,
+        "├─ VAULT CAPACITY ──────────────────",
+        T.kv_row("Multi-Block", string.format("%d Connected Block%s", #cluster, #cluster == 1 and "" or "s")),
+        T.kv_row("Total Items", tostring(total_items)),
+        T.kv_row("Stacks Used", string.format("%d / %d", used_slots, total_slots)),
+        T.kv_row("Fill Level",  T.draw_progress_bar(used_slots, total_slots, 10)),
+        "├─ STORED ITEMS ────────────────────",
     }
 
     if #sorted_items == 0 then
@@ -455,11 +416,13 @@ local function format_vault_glasses_info(pos, node)
         end
     end
 
-    lines[#lines + 1] = LINE_BOT
+    lines[#lines + 1] = "└───────────────────────────────────"
     return table.concat(lines, "\n")
 end
 
-kinetica._glasses_formatters[VAULT_NAME] = format_vault_glasses_info
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(VAULT_NAME, format_vault_glasses_info)
+end
 
 local function update_vault_telemetry(pos)
     local cluster = get_vault_cluster(pos)
@@ -489,7 +452,6 @@ core.register_node(VAULT_NAME, {
     paramtype2            = "facedir",
     is_ground_content     = false,
     tiles                 = get_vault_tiles(),
-    -- `container = 2` + `tubedevice = 1` ensures Mineclonia Hoppers, Funnels, Chutes, and PIs all recognize it
     groups = {
         handy          = 1,
         pickaxey       = 1,
@@ -524,7 +486,6 @@ core.register_node(VAULT_NAME, {
         end
     end,
 
-    -- Hopper & Automation callbacks (allow non-player / fake-player automation, block real players)
     allow_metadata_inventory_put = function(pos, listname, index, stack, player)
         if player and type(player.is_player) == "function" and player:is_player() and not player.is_fake_player then
             return 0

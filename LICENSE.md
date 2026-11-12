@@ -36,21 +36,21 @@ SOFTWARE.
   * `kinetica_Chute.png`
   * `kinetica_encased_fan_front.png`, `kinetica_encased_fan_back.png`
   * `kinetica_feeder_front.png`, `kinetica_feeder_side.png`
-  * `kinetica_gear_box_gear_side.png`, `kinetica_gear_box_gear_side_on.png`, `gearshift_side.png`
+  * `kinetica_gear_box_gear_side.png`, `kinetica_gear_box_gear_side_on.png`, `gearshift_side.png`, `kinetica_speed_var_front_off.png`, `kinetica_speed_var_front_on.png`, `kinetica_speed_var_side.png`
   * `kinetica_glass.png`
+  * `kinetica_guide_book.png`
   * `kinetica_pump_front_off.png`, `kinetica_pump_front_on.png`, `kinetica_pump_side.png`, `kinetica_pump_top.png`
   * `kinetica_shaft_connecting_overlay.png`, `kinetica_shaft_side_off.png`, `kinetica_shaft_side_on.png`, `kinetica_shaft_side_side.png`
-  * `kinetica_speed_var_front_off.png`, `kinetica_speed_var_front_on.png`, `kinetica_speed_var_side.png`
   * `kinetica_steam_turbo_front_off.png`, `kinetica_steam_turbo_front_on.png`, `kinetica_turbo_back.png`, `kinetica_turbo_side.png`
   * `kinetica_super_glue.png`, `kinetica_super_glue_box.png`
   * `kinetica_vault.png`
+  * `kinetica_waterwheel_panel.png`
   * `portabal_transfer_nozel.png`, `portabal_fluid_transfer_nozel.png`
 
 * **Derivative / Adapted Work from Mineclonia & VoxeLibre (CC BY-SA 4.0):**
   The following textures in `textures/` are copied or modified from **Mineclonia** (`https://codeberg.org/mineclonia/mineclonia`) and **VoxeLibre** (`https://git.minetest.land/VoxeLibre/VoxeLibre`), originally based on the **Pixel Perfection** texture pack by **XSSheep** and Mineclonia/VoxeLibre contributors, and inherit the **CC BY-SA 4.0** license:
   * `kinetica_pipe.png`
   * `kinetica_steam_maker_aniamtion.png`, `kinetica_steam_maker_down.png`, `kinetica_steam_maker_front_off.png`, `kinetica_steam_maker_side.png`, `kinetica_steam_maker_top.png`
-  * `kinetica_water_wheel_core.png`
   *(Note: The Mechanical Piston, Piston Pole, Mechanical Saw, Mechanical Drill, and Deployer reference existing Mineclonia node textures directly via runtime dependencies.)*
 
 ### Audio (`sounds/`)

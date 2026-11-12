@@ -1,3 +1,4 @@
+-- kinetica/water_wheel.lua
 kinetica = kinetica or {}
 
 local BIG_WHEEL_KU       = 256
@@ -9,6 +10,15 @@ local INVERT_VISUAL_SPIN = false
 
 kinetica.BIG_WHEEL_KU  = BIG_WHEEL_KU
 kinetica.BIG_WHEEL_RPM = BIG_WHEEL_RPM
+
+local orig_is_ww = kinetica.is_water_wheel
+function kinetica.is_water_wheel(name)
+    if name == "kinetica:water_wheel_big" or name == "kinetica:water_wheel_big_casing" then
+        return true
+    end
+    if orig_is_ww then return orig_is_ww(name) end
+    return false
+end
 
 local function is_water(pos)
     local node = core.get_node(pos)
@@ -37,10 +47,11 @@ core.register_entity("kinetica:water_wheel_big_mesh", {
         visual = "mesh",
         mesh = "kinetica_water_wheel_big.obj",
         textures = {
-            "kinetica_water_wheel_core.png",
             "kinetica_waterwheel_panel.png",
         },
         visual_size = {x = 10, y = 10, z = 10},
+        backface_culling = false,
+        static_save = false,
     },
 
     on_activate = function(self, staticdata)
@@ -60,11 +71,13 @@ core.register_entity("kinetica:water_wheel_big_mesh", {
         end
 
         core.after(0.2, function()
-            if self.object:get_luaentity() then
+            if self.object and self.object:get_luaentity() then
                 local pos = self.object:get_pos()
-                local node = core.get_node(pos)
-                if node.name ~= "kinetica:water_wheel_big" then
-                    self.object:remove()
+                if pos then
+                    local node = core.get_node(vector.round(pos))
+                    if node.name ~= "kinetica:water_wheel_big_casing" and node.name ~= "kinetica:water_wheel_big" then
+                        self.object:remove()
+                    end
                 end
             end
         end)
@@ -187,8 +200,8 @@ local function water_wheel_timer(pos, elapsed)
 
     local active, spin_dir = kinetica.refresh_water_wheel(pos, node)
 
-    if kinetica.update_network then
-        kinetica.update_network(pos)
+    if kinetica.api and kinetica.api.network.update then
+        kinetica.api.network.update(pos)
     end
 
     local is_overstressed = meta:get_int("network_overstressed") == 1
@@ -212,11 +225,14 @@ local function water_wheel_timer(pos, elapsed)
     return true
 end
 
+-- ============================================================================
+-- The Inventory/Mesh Node
+-- ============================================================================
 core.register_node("kinetica:water_wheel_big", {
     description = string.format("Big Water Wheel (%d KU | %d RPM | Max %d in Series)", BIG_WHEEL_KU, BIG_WHEEL_RPM, MAX_WATER_WHEELS),
-    drawtype = "airlike",
-    inventory_image = "kinetica_water_wheel_core.png",
-    wield_image = "kinetica_water_wheel_core.png",
+    drawtype = "mesh",
+    mesh = "kinetica_water_wheel_big.obj",
+    tiles = {"kinetica_waterwheel_panel.png"}, 
     paramtype = "light",
     paramtype2 = "facedir",
     sunlight_propagates = true,
@@ -236,24 +252,48 @@ core.register_node("kinetica:water_wheel_big", {
     on_construct = function(pos)
         local node = core.get_node(pos)
         local canon_p2 = get_canon_wheel_param2(node.param2)
-        if node.param2 ~= canon_p2 then
-            core.swap_node(pos, {name = node.name, param2 = canon_p2})
-        end
+        -- Instantly swap to the airlike casing so the mesh isn't duplicated with the entity
+        core.swap_node(pos, {name = "kinetica:water_wheel_big_casing", param2 = canon_p2})
         sync_wheel_entity(pos, canon_p2, 0)
         core.get_meta(pos):set_string("infotext", string.format(
             "Big Water Wheel: Idle (Place water on Left or Right paddles -> %d KU @ %d RPM | Max %d in series)",
             BIG_WHEEL_KU, BIG_WHEEL_RPM, MAX_WATER_WHEELS
         ))
         core.get_node_timer(pos):start(1.0)
-        if kinetica.schedule_network_update then
-            kinetica.schedule_network_update(pos)
+        if kinetica.api and kinetica.api.network.schedule_update then
+            kinetica.api.network.schedule_update(pos)
         end
     end,
+})
+
+-- ============================================================================
+-- The World Block / Airlike Casing
+-- ============================================================================
+core.register_node("kinetica:water_wheel_big_casing", {
+    description = "Big Water Wheel",
+    drawtype = "airlike",
+    paramtype = "light",
+    paramtype2 = "facedir",
+    sunlight_propagates = true,
+    tiles = {"kinetica_waterwheel_panel.png^[opacity:0"}, -- FIXED: Added an invisible texture to prevent the engine from rejecting the block!
+    groups = {pickaxey = 1, handy = 1, axey = 1, rotational_source = 1, not_in_creative_inventory = 1},
+    _mcl_hardness = 2.0,
+    _mcl_blast_resistance = 2.0,
+    drop = "kinetica:water_wheel_big",
+
+    collision_box = {
+        type = "fixed",
+        fixed = {-0.5, -0.5, -0.5, 0.5, 0.5, 0.5},
+    },
+    selection_box = {
+        type = "fixed",
+        fixed = {-1.5, -1.5, -0.5, 1.5, 1.5, 0.5},
+    },
 
     after_dig_node = function(pos)
         remove_wheel_entities(pos)
-        if kinetica.schedule_network_update then
-            kinetica.schedule_network_update(pos)
+        if kinetica.api and kinetica.api.network.schedule_update then
+            kinetica.api.network.schedule_update(pos)
         end
     end,
 

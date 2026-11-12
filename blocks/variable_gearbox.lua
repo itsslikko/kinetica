@@ -1,3 +1,4 @@
+-- kinetica/blocks/variable_gearbox.lua
 kinetica = kinetica or {}
 
 local CONFIG = {
@@ -15,10 +16,10 @@ local CONFIG = {
     TIERS = {
         [1] = {
             tier_num         = 1,
-            base_name        = "kinetica:speed_controller",
+            base_name        = "kinetica:variable_gearbox",
             short_name       = "Tier 1",
-            ui_title         = "VARIABLE SPEED CONTROLLER & CLUTCH [TIER 1]",
-            desc             = "Variable Speed Controller [Tier 1] (Max 1,024 RPM | Max 10,240 KU | Back = In, Front = Out)",
+            ui_title         = "VARIABLE GEARBOX & CLUTCH [TIER 1]",
+            desc             = "Variable Gearbox [Tier 1] (Max 1,024 RPM | Max 10,240 KU | Back = In, Front = Out)",
             max_rpm          = 1024,
             max_ku           = 10240, -- Rated for up to 10,240 KU Input & Output
             friction_fine_ku = 1,
@@ -28,10 +29,10 @@ local CONFIG = {
         },
         [2] = {
             tier_num         = 2,
-            base_name        = "kinetica:speed_controller_tier2",
+            base_name        = "kinetica:variable_gearbox_tier2",
             short_name       = "Tier 2",
-            ui_title         = "ADVANCED SPEED CONTROLLER & CLUTCH [TIER 2]",
-            desc             = "Advanced Speed Controller [Tier 2] (Max 3,072 RPM | Unlimited KU | Back = In, Front = Out)",
+            ui_title         = "ADVANCED VARIABLE GEARBOX & CLUTCH [TIER 2]",
+            desc             = "Advanced Variable Gearbox [Tier 2] (Max 3,072 RPM | Unlimited KU | Back = In, Front = Out)",
             max_rpm          = 3072,
             max_ku           = nil,   -- nil = Unlimited KU capacity
             friction_fine_ku = 1,
@@ -127,7 +128,7 @@ local CONFIG = {
 local TIER1_BASE = CONFIG.TIERS[1].base_name
 local TIER2_BASE = CONFIG.TIERS[2].base_name
 
-local function get_controller_tier_def(name)
+local function get_tier_def(name)
     if not name then return nil end
     if name == TIER2_BASE or string.sub(name, 1, #TIER2_BASE + 1) == (TIER2_BASE .. "_") then
         return CONFIG.TIERS[2]
@@ -137,12 +138,13 @@ local function get_controller_tier_def(name)
     end
     return nil
 end
-kinetica.get_speed_controller_tier_def = get_controller_tier_def
+kinetica.get_variable_gearbox_tier_def = get_tier_def
 
-local function is_speed_controller(name)
-    return get_controller_tier_def(name) ~= nil
+local function is_variable_gearbox(name)
+    return get_tier_def(name) ~= nil
 end
-kinetica.is_speed_controller = is_speed_controller
+kinetica.is_variable_gearbox = is_variable_gearbox
+kinetica.is_speed_controller = is_variable_gearbox -- Legacy alias
 
 local function format_int(n)
     if kinetica.format_int then
@@ -185,14 +187,12 @@ local function format_rpm(rpm)
     return string.format("%.1f", r)
 end
 
--- Check if input supply KU or input RPM exceeds the controller tier's rated capacity
 local function is_input_over_tier_rating(tier, in_supply_ku, in_rpm)
     local ku_over  = (tier.max_ku ~= nil) and (in_supply_ku or 0) > tier.max_ku
     local rpm_over = (tier.max_rpm ~= nil) and (in_rpm or 0) > tier.max_rpm
     return (ku_over or rpm_over), ku_over, rpm_over
 end
 
--- Escape '^' and ':' for sub-textures embedded inside a Luanti [combine:...] modifier
 local function escape_for_combine(modifier)
     if not modifier or modifier == "" then return "" end
     local s = string.gsub(modifier, "%^", "\\^")
@@ -312,7 +312,7 @@ local function get_visual_spin_sign(param2, spin_dir)
     return ((spin_dir or 1) * axis_sign >= 0) and 1 or -1
 end
 
-local function get_target_controller_node_name(base_name, param2, in_active, in_spin, out_active, out_rpm, rev_out)
+local function get_target_node_name(base_name, param2, in_active, in_spin, out_active, out_rpm, rev_out)
     if not in_active or in_spin == 0 then
         return base_name
     end
@@ -371,17 +371,17 @@ local function scrollbar_val_to_idx(val)
     return clamp_slider_idx((n - 1) + CONFIG.SLIDER_MIN_INDEX)
 end
 
-local active_relay_sc_hash = nil
-local sc_relay_depth       = 0
+local active_relay_hash = nil
+local sc_relay_depth    = 0
 
 local orig_is_source_node = kinetica.is_source_node
 function kinetica.is_source_node(name, pos)
     if orig_is_source_node and orig_is_source_node(name, pos) then
         return true
     end
-    if active_relay_sc_hash ~= nil and is_speed_controller(name) then
+    if active_relay_hash ~= nil and is_variable_gearbox(name) then
         if pos then
-            return core.hash_node_position(pos) == active_relay_sc_hash
+            return core.hash_node_position(pos) == active_relay_hash
         end
         return true
     end
@@ -389,7 +389,7 @@ function kinetica.is_source_node(name, pos)
 end
 
 local function is_real_generator_node(pos, node)
-    if is_speed_controller(node.name) then
+    if is_variable_gearbox(node.name) then
         return false
     end
     if (kinetica.is_water_wheel and kinetica.is_water_wheel(node.name)) or
@@ -406,7 +406,7 @@ end
 local function are_kinetic_nodes_coupled(cur_pos, cur_node, npos, nnode, d, for_input_trace)
     local rev = {x = -d.x, y = -d.y, z = -d.z}
 
-    if is_speed_controller(cur_node.name) then
+    if is_variable_gearbox(cur_node.name) then
         local port_dir = for_input_trace and get_out_dir(cur_node.param2) or get_in_dir(cur_node.param2)
         if d.x ~= port_dir.x or d.y ~= port_dir.y or d.z ~= port_dir.z then
             return false
@@ -417,7 +417,7 @@ local function are_kinetic_nodes_coupled(cur_pos, cur_node, npos, nnode, d, for_
         end
     end
 
-    if is_speed_controller(nnode.name) then
+    if is_variable_gearbox(nnode.name) then
         local want_port = for_input_trace and get_out_dir(nnode.param2) or get_in_dir(nnode.param2)
         return (rev.x == want_port.x and rev.y == want_port.y and rev.z == want_port.z)
     end
@@ -458,7 +458,7 @@ local function input_reaches_real_generator(sc_pos, sc_node, visited_sc)
     end
 
     local rev_in = {x = -in_dir.x, y = -in_dir.y, z = -in_dir.z}
-    if is_speed_controller(in_node.name) then
+    if is_variable_gearbox(in_node.name) then
         if not CONFIG.ALLOW_CHAINED_CONTROLLERS then
             return false, {}
         end
@@ -501,7 +501,7 @@ local function input_reaches_real_generator(sc_pos, sc_node, visited_sc)
             found_gen = true
         end
 
-        if is_speed_controller(cur.node.name) then
+        if is_variable_gearbox(cur.node.name) then
             if CONFIG.ALLOW_CHAINED_CONTROLLERS then
                 local cmeta = core.get_meta(cur.pos)
                 if cmeta:get_int("sc_out_active") == 1 and cmeta:get_int("sc_out_ku") > 0 then
@@ -595,7 +595,7 @@ local function get_single_node_demand_ku(pos, node, rpm)
     return 0
 end
 
-local get_controller_total_input_demand_ku -- forward declaration
+local get_total_input_demand_ku -- forward declaration
 
 local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, visited, upstream_nodes)
     if not out_rpm or out_rpm <= 0 then
@@ -624,7 +624,7 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
     end
 
     local first_couples = false
-    if is_speed_controller(first_node.name) then
+    if is_variable_gearbox(first_node.name) then
         if not CONFIG.ALLOW_CHAINED_CONTROLLERS then
             return 0, false
         end
@@ -659,11 +659,11 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
         local cur = queue[head]
         head = head + 1
 
-        if is_speed_controller(cur.node.name) then
+        if is_variable_gearbox(cur.node.name) then
             if CONFIG.ALLOW_CHAINED_CONTROLLERS then
-                total_ku = total_ku + get_controller_total_input_demand_ku(cur.pos, cur.node, out_rpm, nil, visited)
+                total_ku = total_ku + get_total_input_demand_ku(cur.pos, cur.node, out_rpm, nil, visited)
             else
-                local sub_tier = get_controller_tier_def(cur.node.name) or CONFIG.TIERS[1]
+                local sub_tier = get_tier_def(cur.node.name) or CONFIG.TIERS[1]
                 total_ku = total_ku + (sub_tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU)
             end
         else
@@ -696,9 +696,9 @@ local function compute_output_downstream_demand_ku(sc_pos, sc_node, out_rpm, vis
     return total_ku, loop_found
 end
 
-get_controller_total_input_demand_ku = function(pos, node, in_rpm, in_supply_ku, visited)
+get_total_input_demand_ku = function(pos, node, in_rpm, in_supply_ku, visited)
     node = node or (pos and core.get_node(pos))
-    local tier = (node and get_controller_tier_def(node.name)) or CONFIG.TIERS[1]
+    local tier = (node and get_tier_def(node.name)) or CONFIG.TIERS[1]
     local fine = tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU
 
     if not pos or not in_rpm or in_rpm < CONFIG.MIN_INPUT_RPM then
@@ -715,7 +715,6 @@ get_controller_total_input_demand_ku = function(pos, node, in_rpm, in_supply_ku,
     local check_supply = in_supply_ku or meta:get_int("true_in_supply_ku")
     local over_rating, _, _ = is_input_over_tier_rating(tier, check_supply, in_rpm)
     if over_rating then
-        -- When input exceeds the controller's rated KU or RPM, it forces Neutral and only draws the friction fine
         return fine
     end
 
@@ -733,7 +732,6 @@ get_controller_total_input_demand_ku = function(pos, node, in_rpm, in_supply_ku,
 
     meta:set_int("last_downstream_ku", raw_downstream_ku)
 
-    -- If downstream demand exceeds Tier 1's output KU cap, controller disengages to Neutral
     if tier.max_ku and raw_downstream_ku > tier.max_ku then
         return fine
     end
@@ -750,9 +748,9 @@ local function FLabel(x, y, text)
     return string.format("label[%.2f,%.2f;%s]", x, y, core.formspec_escape(text))
 end
 
-local function get_speed_controller_formspec(pos, node)
+local function get_formspec(pos, node)
     node = node or core.get_node(pos)
-    local tier = get_controller_tier_def(node.name) or CONFIG.TIERS[1]
+    local tier = get_tier_def(node.name) or CONFIG.TIERS[1]
     local fine = tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU
     local meta = core.get_meta(pos)
     local U    = CONFIG.UI_COLORS
@@ -871,9 +869,6 @@ local function get_speed_controller_formspec(pos, node)
     end
     local bar_fill_w = math.max(0.05, (stress_pct / 100) * 5.65)
 
-    -- Right Progress Bar:
-    --   Tier 1: Tracks KU against the 10,240 KU Rated Limit
-    --   Tier 2: Tracks Speed against the 3,072 RPM Ceiling (since Tier 2 KU is Unlimited)
     local right_bar_label
     local cap_pct = 0
     if tier.max_ku then
@@ -1032,9 +1027,58 @@ local function get_speed_controller_formspec(pos, node)
     return table.concat(fs)
 end
 
+local function format_variable_gearbox_glasses_info(pos, node)
+    local meta = core.get_meta(pos)
+    local tier = get_tier_def(node.name) or CONFIG.TIERS[1]
+    
+    local in_rpm         = meta:get_float("true_in_rpm")
+    local in_supply_ku   = meta:get_int("true_in_supply_ku")
+    local in_avail_ku    = meta:get_int("true_in_avail_ku")
+    
+    local step, raw_idx, rs_clutched = get_effective_step(pos, meta)
+    
+    local overstressed   = (meta:get_int("sc_overstressed") == 1) or (meta:get_int("network_overstressed") == 1)
+    local input_exceeded = (meta:get_int("sc_input_exceeded") == 1)
+    local cap_exceeded   = (meta:get_int("sc_cap_exceeded") == 1)
+    local loop_fault     = (meta:get_int("sc_loop_fault") == 1)
+    local has_input      = (in_supply_ku > 0 and in_rpm >= CONFIG.MIN_INPUT_RPM)
+
+    local state_str = "ENGAGED"
+    if loop_fault then state_str = "LOOP FAULT (FORCED NEUTRAL)"
+    elseif input_exceeded then state_str = "INPUT LIMIT EXCEEDED (FORCED NEUTRAL)"
+    elseif cap_exceeded then state_str = "OUTPUT CAPACITY EXCEEDED (FORCED NEUTRAL)"
+    elseif overstressed then state_str = "OVERSTRESSED"
+    elseif rs_clutched then state_str = "REDSTONE CLUTCH (NEUTRAL)"
+    elseif not has_input then state_str = "IDLE (WAITING FOR INPUT)"
+    elseif step.zone == "neutral" then state_str = "NEUTRAL"
+    end
+
+    local out_rpm = (has_input and not input_exceeded and not loop_fault and step.rpm_mult > 0)
+        and math.min(tier.max_rpm, in_rpm * step.rpm_mult)
+        or 0
+
+    local T = kinetica.api and kinetica.api.telemetry or nil
+    if not T then return "" end
+
+    return table.concat({
+        "=== KINETIC GLASSES TELEMETRY ===",
+        "Machine:    " .. tier.short_name .. " Variable Gearbox",
+        "State:      " .. state_str,
+        string.format("Setting:    %s [%+d]", step.short_label, raw_idx),
+        string.format("Input:      %.1f RPM (%d / %d KU Avail)", in_rpm, in_avail_ku, in_supply_ku),
+        string.format("Output:     %.1f RPM", out_rpm),
+        string.format("Downstream: %d KU Load", meta:get_int("last_downstream_ku")),
+    }, "\n")
+end
+
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(TIER1_BASE, format_variable_gearbox_glasses_info)
+    kinetica.api.telemetry.register_formatter(TIER2_BASE, format_variable_gearbox_glasses_info)
+end
+
 local function update_sc_infotext_and_ui(pos, node)
     node = node or core.get_node(pos)
-    local tier = get_controller_tier_def(node.name)
+    local tier = get_tier_def(node.name)
     if not tier then return end
 
     local fine = tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU
@@ -1052,30 +1096,30 @@ local function update_sc_infotext_and_ui(pos, node)
 
     if loop_fault then
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [%s]: LOOP FAULT! (Output connected back to Input network — Forced Neutral)",
+            "Variable Gearbox %s [%s]: LOOP FAULT! (Output connected back to Input network — Forced Neutral)",
             tier.short_name, step.short_label
         ))
     elseif input_exceeded then
         if ku_over and rpm_over then
             meta:set_string("infotext", string.format(
-                "Speed Controller %s: INPUT LIMIT EXCEEDED! (In: %s KU @ %s RPM > Max %s KU / %s RPM — Forced Neutral)",
+                "Variable Gearbox %s: INPUT LIMIT EXCEEDED! (In: %s KU @ %s RPM > Max %s KU / %s RPM — Forced Neutral)",
                 tier.short_name, format_int(in_supply_ku), format_rpm(in_rpm), format_int(tier.max_ku), format_int(tier.max_rpm)
             ))
         elseif ku_over then
             meta:set_string("infotext", string.format(
-                "Speed Controller %s: INPUT LIMIT EXCEEDED! (Input Supply %s KU > Max %s KU Rating — Forced Neutral)",
+                "Variable Gearbox %s: INPUT LIMIT EXCEEDED! (Input Supply %s KU > Max %s KU Rating — Forced Neutral)",
                 tier.short_name, format_int(in_supply_ku), format_int(tier.max_ku)
             ))
         else
             meta:set_string("infotext", string.format(
-                "Speed Controller %s: INPUT LIMIT EXCEEDED! (Input Speed %s RPM > Max %s RPM Rating — Forced Neutral)",
+                "Variable Gearbox %s: INPUT LIMIT EXCEEDED! (Input Speed %s RPM > Max %s RPM Rating — Forced Neutral)",
                 tier.short_name, format_rpm(in_rpm), format_int(tier.max_rpm)
             ))
         end
     elseif cap_exceeded then
         local down_ku = meta:get_int("last_downstream_ku")
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [%s]: OUTPUT CAPACITY EXCEEDED! (Downstream %s KU > Max %s KU — Forced Neutral)",
+            "Variable Gearbox %s [%s]: OUTPUT CAPACITY EXCEEDED! (Downstream %s KU > Max %s KU — Forced Neutral)",
             tier.short_name, step.short_label, format_int(down_ku), format_int(tier.max_ku or 0)
         ))
     elseif overstressed then
@@ -1084,23 +1128,23 @@ local function update_sc_infotext_and_ui(pos, node)
         local eff_mult = (in_rpm > 0 and out_rpm > 0) and (out_rpm / in_rpm) or step.ku_cost_mult
         local req_in   = fine + math.ceil(down_ku * eff_mult)
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [%s]: OVERSTRESSED! (Needs %s Input KU for %s Downstream KU @ %.3gx | Supply: %s KU)",
+            "Variable Gearbox %s [%s]: OVERSTRESSED! (Needs %s Input KU for %s Downstream KU @ %.3gx | Supply: %s KU)",
             tier.short_name, step.short_label, format_int(req_in), format_int(down_ku), eff_mult, format_int(in_supply_ku)
         ))
     elseif rs_clutched then
         meta:set_string("infotext", string.format(
-            "Speed Controller %s: REDSTONE CLUTCH LOCKED (Output: 0 RPM)",
+            "Variable Gearbox %s: REDSTONE CLUTCH LOCKED (Output: 0 RPM)",
             tier.short_name
         ))
     elseif in_supply_ku <= 0 or in_rpm < CONFIG.MIN_INPUT_RPM then
         local cap_lbl = tier.max_ku and (format_int(tier.max_ku) .. " KU") or "Unlimited KU"
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [%s]: Idle (Max %s RPM / %s | Connect Shaft to Back Input Port)",
+            "Variable Gearbox %s [%s]: Idle (Max %s RPM / %s | Connect Shaft to Back Input Port)",
             tier.short_name, step.short_label, format_int(tier.max_rpm), cap_lbl
         ))
     elseif step.zone == "neutral" then
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [NEUTRAL]: Clutch Disengaged (In: %s RPM -> Out: 0 RPM | -%d KU fine)",
+            "Variable Gearbox %s [NEUTRAL]: Clutch Disengaged (In: %s RPM -> Out: 0 RPM | -%d KU fine)",
             tier.short_name, format_rpm(in_rpm), fine
         ))
     else
@@ -1110,7 +1154,7 @@ local function update_sc_infotext_and_ui(pos, node)
         local in_load  = fine + math.ceil(down_ku * eff_mult)
         local out_cap  = meta:get_int("sc_out_ku")
         meta:set_string("infotext", string.format(
-            "Speed Controller %s [%s]: In %s RPM (-%s KU) -> Out %s RPM (Load: %s / %s KU | Net Avail: %s/%s KU)",
+            "Variable Gearbox %s [%s]: In %s RPM (-%s KU) -> Out %s RPM (Load: %s / %s KU | Net Avail: %s/%s KU)",
             tier.short_name, step.short_label,
             format_rpm(in_rpm), format_int(in_load),
             format_rpm(out_rpm), format_int(down_ku), format_int(out_cap),
@@ -1118,7 +1162,8 @@ local function update_sc_infotext_and_ui(pos, node)
         ))
     end
 
-    meta:set_string("formspec", get_speed_controller_formspec(pos, node))
+    meta:set_string("formspec", get_formspec(pos, node))
+    meta:set_string("glasses_info", format_variable_gearbox_glasses_info(pos, node))
 end
 
 local function restore_true_input_meta(meta)
@@ -1131,11 +1176,11 @@ local function restore_true_input_meta(meta)
 end
 
 local function drive_output_network(pos, node)
-    if not kinetica.update_network or sc_relay_depth > 4 then
+    if not kinetica.api or not kinetica.api.network.update or sc_relay_depth > 4 then
         return
     end
     node = node or core.get_node(pos)
-    if not is_speed_controller(node.name) then return end
+    if not is_variable_gearbox(node.name) then return end
 
     local out_dir = get_out_dir(node.param2)
     local out_pos = {
@@ -1151,24 +1196,24 @@ local function drive_output_network(pos, node)
     local meta       = core.get_meta(pos)
     local out_active = (meta:get_int("sc_out_active") == 1)
 
-    local prev_hash = active_relay_sc_hash
-    active_relay_sc_hash = out_active and core.hash_node_position(pos) or nil
+    local prev_hash = active_relay_hash
+    active_relay_hash = out_active and core.hash_node_position(pos) or nil
     sc_relay_depth = sc_relay_depth + 1
 
-    kinetica.update_network(out_pos)
+    kinetica.api.network.update(out_pos)
 
     sc_relay_depth = sc_relay_depth - 1
-    active_relay_sc_hash = prev_hash
+    active_relay_hash = prev_hash
 
     restore_true_input_meta(meta)
 end
 
 local function refresh_controller_networks(pos)
-    if not kinetica.update_network or sc_relay_depth > 4 then
+    if not kinetica.api or not kinetica.api.network.update or sc_relay_depth > 4 then
         return
     end
     local node = core.get_node(pos)
-    if not is_speed_controller(node.name) then return end
+    if not is_variable_gearbox(node.name) then return end
 
     local in_dir = get_in_dir(node.param2)
     local in_pos = {
@@ -1177,11 +1222,11 @@ local function refresh_controller_networks(pos)
         z = pos.z + in_dir.z,
     }
 
-    local saved_hash = active_relay_sc_hash
-    active_relay_sc_hash = nil
-    kinetica.update_network(in_pos)
-    kinetica.update_network(pos)
-    active_relay_sc_hash = saved_hash
+    local saved_hash = active_relay_hash
+    active_relay_hash = nil
+    kinetica.api.network.update(in_pos)
+    kinetica.api.network.update(pos)
+    active_relay_hash = saved_hash
 
     drive_output_network(pos, core.get_node(pos))
     update_sc_infotext_and_ui(pos, core.get_node(pos))
@@ -1189,7 +1234,7 @@ end
 
 local function deactivate_sc_output(pos, node, preserve_input_telemetry, keep_input_spinning)
     node = node or core.get_node(pos)
-    local tier = get_controller_tier_def(node.name) or CONFIG.TIERS[1]
+    local tier = get_tier_def(node.name) or CONFIG.TIERS[1]
     local meta = core.get_meta(pos)
 
     if not preserve_input_telemetry then
@@ -1215,7 +1260,7 @@ local function deactivate_sc_output(pos, node, preserve_input_telemetry, keep_in
     meta:set_int("local_spin",    0)
 
     local in_spin = meta:get_int("true_in_spin")
-    local target_name = get_target_controller_node_name(
+    local target_name = get_target_node_name(
         tier.base_name, node.param2, keep_input_spinning and (in_spin ~= 0), in_spin, false, 0, false
     )
     if node.name ~= target_name then
@@ -1227,7 +1272,7 @@ local function deactivate_sc_output(pos, node, preserve_input_telemetry, keep_in
 end
 
 local function set_sc_idle(pos, node, reason_text)
-    if active_relay_sc_hash ~= nil and core.hash_node_position(pos) == active_relay_sc_hash then
+    if active_relay_hash ~= nil and core.hash_node_position(pos) == active_relay_hash then
         restore_true_input_meta(core.get_meta(pos))
         return
     end
@@ -1235,11 +1280,11 @@ local function set_sc_idle(pos, node, reason_text)
 end
 
 local function on_sc_overstress(pos, node, shared_rpm, nspin, total_supply_ku, total_demand_ku, machine_demand_ku)
-    if active_relay_sc_hash ~= nil and core.hash_node_position(pos) == active_relay_sc_hash then
+    if active_relay_hash ~= nil and core.hash_node_position(pos) == active_relay_hash then
         return
     end
     node = node or core.get_node(pos)
-    local tier = get_controller_tier_def(node.name) or CONFIG.TIERS[1]
+    local tier = get_tier_def(node.name) or CONFIG.TIERS[1]
     local fine = tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU
     local meta = core.get_meta(pos)
     local now  = math.floor(core.get_gametime())
@@ -1275,13 +1320,13 @@ local function on_sc_overstress(pos, node, shared_rpm, nspin, total_supply_ku, t
 end
 
 local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
-    if active_relay_sc_hash ~= nil and core.hash_node_position(pos) == active_relay_sc_hash then
+    if active_relay_hash ~= nil and core.hash_node_position(pos) == active_relay_hash then
         restore_true_input_meta(core.get_meta(pos))
         return
     end
 
     node = node or core.get_node(pos)
-    local tier = get_controller_tier_def(node.name) or CONFIG.TIERS[1]
+    local tier = get_tier_def(node.name) or CONFIG.TIERS[1]
     local fine = tier.friction_fine_ku or CONFIG.FRICTION_FINE_KU
     local meta = core.get_meta(pos)
     local now  = math.floor(core.get_gametime())
@@ -1292,7 +1337,6 @@ local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
         return
     end
 
-    -- 1. Check Input Rated Capacity (KU & RPM): auto-engage Neutral if exceeded
     local over_rating, _, _ = is_input_over_tier_rating(tier, supply_ku, rpm)
     if over_rating then
         local reported_demand = demand_ku or 0
@@ -1327,7 +1371,6 @@ local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
     end
     meta:set_int("last_downstream_ku", raw_down_ku)
 
-    -- 2. Check for Input-to-Output Loop Fault
     if loop_found then
         meta:set_float("true_in_rpm",      rpm)
         meta:set_int("true_in_spin",       spin_dir)
@@ -1343,7 +1386,6 @@ local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
         return
     end
 
-    -- 3. Check if Downstream Demand exceeds Tier's Max KU (10,240 KU on Tier 1)
     if out_active and tier.max_ku and raw_down_ku > tier.max_ku then
         local reported_demand = demand_ku or 0
         local reclaimed_ku    = math.max(0, reported_demand - fine)
@@ -1419,7 +1461,7 @@ local function wake_sc(pos, node, rpm, spin_dir, demand_ku, avail_ku, supply_ku)
         meta:set_int("local_spin",    0)
     end
 
-    local target_name = get_target_controller_node_name(
+    local target_name = get_target_node_name(
         tier.base_name, node.param2, true, spin_dir, out_active, out_rpm, rev_out
     )
     if node.name ~= target_name then
@@ -1461,14 +1503,14 @@ for _, tier in pairs(CONFIG.TIERS) do
         kinetica.register_kinetic_machine(tier.base_name, {
             can_ride_piston = false,
             get_demand_ku   = function(rpm, pos, node, total_supply_ku)
-                if active_relay_sc_hash and pos and core.hash_node_position(pos) == active_relay_sc_hash then
+                if active_relay_hash and pos and core.hash_node_position(pos) == active_relay_hash then
                     return 0
                 end
-                return get_controller_total_input_demand_ku(pos, node, rpm, total_supply_ku, nil)
+                return get_total_input_demand_ku(pos, node, rpm, total_supply_ku, nil)
             end,
             has_axle_port   = function(node, d, pos)
-                local is_active_relay = (active_relay_sc_hash ~= nil) and
-                    (pos == nil or core.hash_node_position(pos) == active_relay_sc_hash)
+                local is_active_relay = (active_relay_hash ~= nil) and
+                    (pos == nil or core.hash_node_position(pos) == active_relay_hash)
                 if is_active_relay then
                     local out_dir = get_out_dir(node.param2)
                     return (d.x == out_dir.x and d.y == out_dir.y and d.z == out_dir.z)
@@ -1488,7 +1530,7 @@ local function notify_nearby_speed_controllers(origin_pos)
     local found = core.find_nodes_in_area(
         {x = origin_pos.x - 16, y = origin_pos.y - 16, z = origin_pos.z - 16},
         {x = origin_pos.x + 16, y = origin_pos.y + 16, z = origin_pos.z + 16},
-        {"group:speed_controller"}
+        {"group:variable_gearbox"}
     )
     for _, sc_pos in ipairs(found) do
         refresh_controller_networks(sc_pos)
@@ -1511,6 +1553,7 @@ core.register_on_dignode(function(pos, oldnode)
     end
 end)
 
+-- Restored helper function so placing a Variable Gearbox never throws a nil error
 local function look_to_unit_dir(placer, allow_vertical)
     local look = placer and placer:get_look_dir() or {x = 0, y = 0, z = 1}
     local ax, ay, az = math.abs(look.x), math.abs(look.y), math.abs(look.z)
@@ -1521,27 +1564,6 @@ local function look_to_unit_dir(placer, allow_vertical)
     else
         return {x = 0, y = 0, z = (look.z > 0) and 1 or -1}
     end
-end
-
-local function get_strongest_power_source(pos)
-    local best_dir = nil
-    local best_ku  = 0
-    for _, d in ipairs(ALL_6_DIRS) do
-        local np = {x = pos.x + d.x, y = pos.y + d.y, z = pos.z + d.z}
-        local nnode = core.get_node(np)
-        if kinetica.is_kinetic_node and kinetica.is_kinetic_node(nnode.name) then
-            local rev = {x = -d.x, y = -d.y, z = -d.z}
-            if kinetica.has_axle_port and kinetica.has_axle_port(nnode, rev, np) then
-                local nmeta = core.get_meta(np)
-                local avail = math.max(nmeta:get_int("rotational_power"), nmeta:get_int("source_ku"))
-                if avail > best_ku then
-                    best_ku  = avail
-                    best_dir = d
-                end
-            end
-        end
-    end
-    return best_dir, best_ku
 end
 
 local function place_speed_controller(itemstack, placer, pointed_thing)
@@ -1572,16 +1594,32 @@ local function place_speed_controller(itemstack, placer, pointed_thing)
 
     local out_dir = nil
     if not sneaking then
-        local src_dir, src_ku = get_strongest_power_source(place_pos)
-        if src_dir and src_ku > 0 then
-            out_dir = {x = -src_dir.x, y = -src_dir.y, z = -src_dir.z}
+        local best_dir = nil
+        local best_ku  = 0
+        for _, d in ipairs(ALL_6_DIRS) do
+            local np = {x = place_pos.x + d.x, y = place_pos.y + d.y, z = place_pos.z + d.z}
+            local nnode = core.get_node(np)
+            if kinetica.is_kinetic_node and kinetica.is_kinetic_node(nnode.name) then
+                local rev = {x = -d.x, y = -d.y, z = -d.z}
+                if kinetica.has_axle_port and kinetica.has_axle_port(nnode, rev, np) then
+                    local nmeta = core.get_meta(np)
+                    local avail = math.max(nmeta:get_int("rotational_power"), nmeta:get_int("source_ku"))
+                    if avail > best_ku then
+                        best_ku  = avail
+                        best_dir = d
+                    end
+                end
+            end
+        end
+        if best_dir and best_ku > 0 then
+            out_dir = {x = -best_dir.x, y = -best_dir.y, z = -best_dir.z}
             if not CONFIG.ALLOW_VERTICAL_PLACEMENT and out_dir.y ~= 0 then
                 out_dir = nil
             end
         end
         if not out_dir then
             if (kinetica.has_axle_port and kinetica.has_axle_port(under_node, diff, under_pos)) or
-               is_speed_controller(under_node.name) then
+               is_variable_gearbox(under_node.name) then
                 if CONFIG.ALLOW_VERTICAL_PLACEMENT or diff.y == 0 then
                     out_dir = diff
                 end
@@ -1673,9 +1711,9 @@ end
 local function on_sc_after_dig(pos, oldnode)
     local out_dir = get_out_dir(oldnode.param2)
     local in_dir  = get_in_dir(oldnode.param2)
-    if kinetica.schedule_network_update then
-        kinetica.schedule_network_update({x = pos.x + in_dir.x,  y = pos.y + in_dir.y,  z = pos.z + in_dir.z})
-        kinetica.schedule_network_update({x = pos.x + out_dir.x, y = pos.y + out_dir.y, z = pos.z + out_dir.z})
+    if kinetica.api and kinetica.api.network.schedule_update then
+        kinetica.api.network.schedule_update({x = pos.x + in_dir.x,  y = pos.y + in_dir.y,  z = pos.z + in_dir.z})
+        kinetica.api.network.schedule_update({x = pos.x + out_dir.x, y = pos.y + out_dir.y, z = pos.z + out_dir.z})
     end
 end
 
@@ -1690,8 +1728,8 @@ local function register_controller_tier_nodes(tier)
     local in_anim_cw    = make_input_port_anim(false, CONFIG.ANIM_LEN_INPUT, tint)
     local in_anim_ccw   = make_input_port_anim(true,  CONFIG.ANIM_LEN_INPUT, tint)
 
-    local base_groups   = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, speed_controller = tier.tier_num}
-    local active_groups = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, speed_controller = tier.tier_num, not_in_creative_inventory = 1}
+    local base_groups   = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, variable_gearbox = tier.tier_num, speed_controller = tier.tier_num}
+    local active_groups = {handy = 1, pickaxey = 1, axey = 1, kinetic_receiver = 1, variable_gearbox = tier.tier_num, speed_controller = tier.tier_num, not_in_creative_inventory = 1}
 
     local function register_variant(node_name, desc, in_tile, out_tile, is_base)
         core.register_node(node_name, {
@@ -1727,8 +1765,8 @@ local function register_controller_tier_nodes(tier)
     end
 
     register_variant(base_name, tier.desc, in_face_idle, out_face_idle, true)
-    register_variant(base_name .. "_neutral_cw",  tier.short_name .. " Speed Controller (Neutral CW)",  in_anim_ccw, out_face_idle, false)
-    register_variant(base_name .. "_neutral_ccw", tier.short_name .. " Speed Controller (Neutral CCW)", in_anim_cw,  out_face_idle, false)
+    register_variant(base_name .. "_neutral_cw",  tier.short_name .. " Variable Gearbox (Neutral CW)",  in_anim_ccw, out_face_idle, false)
+    register_variant(base_name .. "_neutral_ccw", tier.short_name .. " Variable Gearbox (Neutral CCW)", in_anim_cw,  out_face_idle, false)
 
     for _, anim_tier in ipairs(CONFIG.OUTPUT_ANIM_TIERS) do
         local out_cw  = make_output_port_anim(false, anim_tier.length, tint)
@@ -1741,7 +1779,7 @@ local function register_controller_tier_nodes(tier)
                 local vname    = base_name .. "_" .. anim_tier.name .. "_" .. in_dir_tag .. "_" .. out_dir_tag
                 register_variant(
                     vname,
-                    string.format("%s Speed Controller (%s %s)", tier.short_name, string.upper(anim_tier.name), string.upper(out_dir_tag)),
+                    string.format("%s Variable Gearbox (%s %s)", tier.short_name, string.upper(anim_tier.name), string.upper(out_dir_tag)),
                     in_tile,
                     out_tile,
                     false
@@ -1754,13 +1792,15 @@ end
 register_controller_tier_nodes(CONFIG.TIERS[1])
 register_controller_tier_nodes(CONFIG.TIERS[2])
 
+core.register_alias("kinetica:speed_controller", TIER1_BASE)
+core.register_alias("kinetica:speed_controller_tier2", TIER2_BASE)
 core.register_alias("kinetica:speed_controller_active_cw",  TIER1_BASE .. "_medium_cw_cw")
 core.register_alias("kinetica:speed_controller_active_ccw", TIER1_BASE .. "_medium_ccw_ccw")
 
 core.register_lbm({
-    label             = "Wake kinetica Speed Controllers on chunk load",
-    name              = "kinetica:wake_speed_controllers_lbm",
-    nodenames         = {"group:speed_controller"},
+    label             = "Wake kinetica Variable Gearboxes on chunk load",
+    name              = "kinetica:wake_variable_gearboxes_lbm",
+    nodenames         = {"group:variable_gearbox"},
     run_at_every_load = true,
     action = function(pos, node)
         local timer = core.get_node_timer(pos)
@@ -1784,8 +1824,8 @@ core.register_craft({
 core.register_craft({
     output = TIER2_BASE,
     recipe = {
-        {"mcl_core:gold_ingot", "mcl_core:diamond",                 "mcl_core:gold_ingot"},
-        {"kinetica:gearbox",    TIER1_BASE,                         "kinetica:gearbox"},
+        {"mcl_core:gold_ingot", "mcl_core:diamond",           "mcl_core:gold_ingot"},
+        {"kinetica:gearbox",    TIER1_BASE,                   "kinetica:gearbox"},
         {"mcl_core:gold_ingot", "mcl_redstone:redstone_block", "mcl_core:gold_ingot"},
     },
 })

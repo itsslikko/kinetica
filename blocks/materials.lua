@@ -275,16 +275,6 @@ core.register_node(CASING_GOLD, {
     sounds                = sound_wood_metal,
 })
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
-local LINE_TOP = "┌─ ENGINEER'S GLASSES ──────────────"
-local LINE_DET = "├─ CASING DETAILS ──────────────────"
-local LINE_BOT = "└───────────────────────────────────"
-
-local function kv_row(label, value)
-    return string.format("│  %-11s: %s", label, tostring(value))
-end
-
 local function format_casing_glasses_info(pos, node)
     local name = node and node.name or ""
     local title, tier_str, mat_str, use_str = "Andesite Casing", "Tier 1 (Basic Kinetics)", "Andesite Alloy + Wood", "Press, Drill, Saw, Gearbox, Depot"
@@ -300,21 +290,26 @@ local function format_casing_glasses_info(pos, node)
         mat_str  = "Gold Sheets + Wood"
         use_str  = "Smart Funnel & Precision Routing"
     end
+    
+    local T = kinetica.api and kinetica.api.telemetry
+    if not T then return "" end
 
     return table.concat({
-        LINE_TOP,
+        "┌─ ENGINEER'S GLASSES ──────────────",
         "│  " .. title,
-        "│  ● TIER     : " .. tier_str,
-        LINE_DET,
-        kv_row("Composition", mat_str),
-        kv_row("Used For",    use_str),
-        LINE_BOT,
+        "│  ● TIER: " .. tier_str,
+        "├─ CASING DETAILS ──────────────────",
+        T.kv_row("Composition", mat_str),
+        T.kv_row("Used For",    use_str),
+        "└───────────────────────────────────",
     }, "\n")
 end
 
-kinetica._glasses_formatters[CASING_ANDESITE] = format_casing_glasses_info
-kinetica._glasses_formatters[CASING_COPPER]   = format_casing_glasses_info
-kinetica._glasses_formatters[CASING_GOLD]     = format_casing_glasses_info
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(CASING_ANDESITE, format_casing_glasses_info)
+    kinetica.api.telemetry.register_formatter(CASING_COPPER,   format_casing_glasses_info)
+    kinetica.api.telemetry.register_formatter(CASING_GOLD,     format_casing_glasses_info)
+end
 
 core.register_craft({
     type   = "shapeless",

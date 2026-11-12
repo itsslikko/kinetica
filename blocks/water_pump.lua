@@ -1,3 +1,4 @@
+-- kinetica/water_pump.lua
 kinetica = kinetica or {}
 
 local modname = core.get_current_modname() or "kinetica"
@@ -8,7 +9,7 @@ local modpath = core.get_modpath(modname) or ""
 -- ============================================================================
 local SOUND_CONFIG = {
     ENABLE_SOUND            = true,
-    SOUND_NAME              = "water_pump",         -- Custom .ogg in sounds/ folder (without .ogg)
+    SOUND_NAME              = "water_pump",             -- Custom .ogg in sounds/ folder (without .ogg)
     SOUND_FALLBACK          = "default_water_footstep", -- Built-in fallback sound if custom .ogg is missing
     SOUND_GAIN              = 0.25,                     -- Volume (0.0 to 1.0)
     SOUND_PITCH             = 0.85,                     -- Base pitch when SCALE_PITCH_WITH_RPM = false
@@ -27,14 +28,6 @@ local CONFIG = {
     MAX_WATER_PER_SEC             = 100,
     MAX_RPM_CAP                   = 3072,
     DIRECT_FEED_STEAM_GENERATOR   = true,
-    ANIM_TIERS = {
-        { name = "crawl",  max_rpm = 5,    length = 0.85 },
-        { name = "slow",   max_rpm = 15,   length = 0.48 },
-        { name = "medium", max_rpm = 63,   length = 0.24 },
-        { name = "fast",   max_rpm = 255,  length = 0.11 },
-        { name = "hyper",  max_rpm = 1024, length = 0.05 },
-        { name = "ultra",  max_rpm = 3072, length = 0.03 },
-    },
     HIDE_INFOTEXT_WITHOUT_GLASSES = false,
     TEX_TOP                       = "kinetica_pump_top.png",
     TEX_SIDE                      = "kinetica_pump_side.png",
@@ -43,10 +36,7 @@ local CONFIG = {
     TEX_SHAFT_OVERLAY             = "kinetica_shaft_connecting_overlay.png",
 }
 
-local IDLE_NAME       = "kinetica:water_pump"
-local ACTIVE_CW_NAME  = "kinetica:water_pump_active_cw"
-local ACTIVE_CCW_NAME = "kinetica:water_pump_active_ccw"
-
+local IDLE_NAME = "kinetica:water_pump"
 local MIN_PUMP_RPM   = CONFIG.MIN_PUMP_RPM
 local MAX_PUMP_CHAIN = CONFIG.MAX_PUMP_CHAIN
 
@@ -105,22 +95,18 @@ kinetica.is_water_pump = is_water_pump_node
 
 local function get_anim_tier_name(rpm)
     local clamped = math.min(CONFIG.MAX_RPM_CAP, math.max(0, rpm or 0))
-    for _, tier in ipairs(CONFIG.ANIM_TIERS) do
+    for _, tier in ipairs(kinetica.api.registration.ANIM_TIERS) do
         if clamped <= tier.max_rpm then
             return tier.name
         end
     end
-    return CONFIG.ANIM_TIERS[#CONFIG.ANIM_TIERS].name
+    return kinetica.api.registration.ANIM_TIERS[#kinetica.api.registration.ANIM_TIERS].name
 end
 
 local function get_active_pump_node_name(rpm, vis_spin)
     local tier_name = get_anim_tier_name(rpm)
     local dir_tag   = (vis_spin == 1) and "cw" or "ccw"
-    local candidate = IDLE_NAME .. "_" .. tier_name .. "_" .. dir_tag
-    if core.registered_nodes[candidate] then
-        return candidate
-    end
-    return (vis_spin == 1) and ACTIVE_CW_NAME or ACTIVE_CCW_NAME
+    return IDLE_NAME .. "_" .. tier_name .. "_" .. dir_tag
 end
 
 local function is_water_source_or_flowing(name)
@@ -172,8 +158,6 @@ local function calc_pump_water_rate(rpm)
     )
 end
 
-kinetica._glasses_formatters = kinetica._glasses_formatters or {}
-
 local function format_water_pump_glasses_info(pos, node)
     local meta       = core.get_meta(pos)
     local now        = math.floor(core.get_gametime())
@@ -199,26 +183,35 @@ local function format_water_pump_glasses_info(pos, node)
         state_str = has_water and "PUMPING WATER" or "RUNNING DRY (No Water Below!)"
     end
 
+    local T = kinetica.api and kinetica.api.telemetry or nil
+    if not T then return "" end
+
     return table.concat({
-        "=== KINETIC GLASSES TELEMETRY ===",
-        "Machine:    Mechanical Water Pump",
-        "State:      " .. state_str,
-        string.format("Speed:      %.1f RPM (Min %d RPM)", is_powered and rpm or 0, MIN_PUMP_RPM),
-        string.format("Power:      %d / %d KU Avail (-%d KU Load)", is_powered and avail_ku or 0, supply_ku, is_active and demand_ku or 0),
-        string.format("Pump Output:%d Water/s (Top Port)", pump_rate),
-        string.format("Intake (-Y):%s | Chain: %d/%d", has_water and "Water Detected" or "Dry / Air", chain_sz, MAX_PUMP_CHAIN),
+        "┌─ ENGINEER'S GLASSES ──────────────",
+        "│  Machine: Mechanical Water Pump",
+        "│  ● STATE: " .. state_str,
+        "├─ KINETIC NETWORK ─────────────────",
+        T.kv_row("Speed", string.format("%.1f RPM (Min %d RPM)", is_powered and rpm or 0, MIN_PUMP_RPM)),
+        T.kv_row("Power", string.format("%d / %d KU Avail (-%d KU Load)", is_powered and avail_ku or 0, supply_ku, is_active and demand_ku or 0)),
+        "├─ MACHINE DETAILS ─────────────────",
+        T.kv_row("Pump Output", string.format("%d Water/s (Top Port)", pump_rate)),
+        T.kv_row("Intake (-Y)", has_water and "Water Detected" or "Dry / Air"),
+        T.kv_row("Axle Chain",  string.format("%d / %d Pumps", chain_sz, MAX_PUMP_CHAIN)),
+        "└───────────────────────────────────",
     }, "\n")
 end
 
-kinetica._glasses_formatters[IDLE_NAME] = format_water_pump_glasses_info
+if kinetica.api and kinetica.api.telemetry then
+    kinetica.api.telemetry.register_formatter(IDLE_NAME, format_water_pump_glasses_info)
+end
 
 local function pump_timer(pos, elapsed)
     local now  = math.floor(core.get_gametime())
     local meta = core.get_meta(pos)
     local node = core.get_node(pos)
 
-    if now >= meta:get_int("lit_until") and kinetica.update_network then
-        kinetica.update_network(pos)
+    if now >= meta:get_int("lit_until") and kinetica.api and kinetica.api.network.update then
+        kinetica.api.network.update(pos)
         node = core.get_node(pos)
     end
 
@@ -235,7 +228,14 @@ local function pump_timer(pos, elapsed)
     local found_water = is_water_source_or_flowing(core.get_node(bottom_pos).name)
     meta:set_int("has_water_below", found_water and 1 or 0)
 
-    if supply_ku > 0 and rpm > 0 and now < meta:get_int("lit_until") then
+    local is_powered, uni_rpm, uni_sup, uni_ava, uni_spin = kinetica.get_node_power(pos, meta)
+    if is_powered and uni_rpm > 0 then
+        -- Update local variables with unified values before running the pump logic
+        rpm = uni_rpm
+        supply_ku = uni_sup
+        avail_ku = uni_ava
+        canon_spin = uni_spin
+        
         local axles      = get_pump_axle_dirs(node.param2)
         local chain_size = get_pump_chain_size(pos, axles[1])
         meta:set_int("chain_size", chain_size)
@@ -281,7 +281,6 @@ local function pump_timer(pos, elapsed)
             node.name = target_node
         end
 
-        -- Play sound ONLY when the pump is actively running
         play_pump_active_sound(pos, meta, rpm, found_water, 1.0)
 
         local top_pos     = {x = pos.x, y = pos.y + 1, z = pos.z}
@@ -388,9 +387,6 @@ local function make_pump_overlay(reverse, anim_length)
 end
 
 local function make_pump_fan_anim(reverse, anim_length)
-    if kinetica.make_4frame_anim then
-        return kinetica.make_4frame_anim(CONFIG.TEX_FRONT_ON, reverse, "", anim_length)
-    end
     local tex = CONFIG.TEX_FRONT_ON
     if reverse then
         tex = "[combine:16x64" ..
@@ -410,30 +406,44 @@ local function make_pump_fan_anim(reverse, anim_length)
     }
 end
 
-local base_groups   = {pickaxey = 1, kinetic_receiver = 1, steam_connectable = 1, pipe_water = 1, kinetica_water_pump = 1}
-local active_groups = {pickaxey = 1, kinetic_receiver = 1, not_in_creative_inventory = 1, steam_connectable = 1, pipe_water = 1, kinetica_water_pump = 1}
-
-local function register_pump_variant(node_name, right_tile, left_tile, back_tile, front_tile, is_base)
-    core.register_node(node_name, {
-        description = is_base
-            and string.format("Mechanical Water Pump (Min %d RPM | Scales Water/s with RPM)", MIN_PUMP_RPM)
-            or  "Mechanical Water Pump",
-        tiles = {
-            CONFIG.TEX_TOP,
-            CONFIG.TEX_TOP,
-            right_tile,
-            left_tile,
-            back_tile,
-            front_tile,
-        },
+if kinetica.api and kinetica.api.registration then
+    kinetica.api.registration.register_rotary_machine(IDLE_NAME, {
+        description = string.format("Mechanical Water Pump (Min %d RPM | Scales Water/s with RPM)", MIN_PUMP_RPM),
+        description_active = "Mechanical Water Pump",
         paramtype2 = "facedir",
-        drop = is_base and nil or IDLE_NAME,
-        groups = is_base and base_groups or active_groups,
-        _mcl_hardness = 2.5,
-        _mcl_blast_resistance = 3.0,
-        sounds = mcl_sounds.node_sound_metal_defaults(),
+        groups_idle = {pickaxey = 1, kinetic_receiver = 1, steam_connectable = 1, pipe_water = 1, kinetica_water_pump = 1},
+        hardness = 2.5,
+        blast_resistance = 3.0,
+        sounds = mcl_sounds and mcl_sounds.node_sound_metal_defaults and mcl_sounds.node_sound_metal_defaults() or nil,
 
-        on_construct = is_base and function(pos)
+        tiles_idle = {
+            CONFIG.TEX_TOP, CONFIG.TEX_TOP, idle_side_with_shaft,
+            idle_side_with_shaft, CONFIG.TEX_FRONT_OFF, CONFIG.TEX_FRONT_OFF
+        },
+        tiles_active_cw = {
+            CONFIG.TEX_TOP, CONFIG.TEX_TOP,
+            make_pump_overlay(true, 0.24), make_pump_overlay(false, 0.24),
+            make_pump_fan_anim(true, 0.24), make_pump_fan_anim(false, 0.24)
+        },
+        tiles_active_ccw = {
+            CONFIG.TEX_TOP, CONFIG.TEX_TOP,
+            make_pump_overlay(false, 0.24), make_pump_overlay(true, 0.24),
+            make_pump_fan_anim(false, 0.24), make_pump_fan_anim(true, 0.24)
+        },
+        build_tier_tiles = function(tier, is_ccw)
+            local a_cw  = make_pump_overlay(false, tier.length)
+            local a_ccw = make_pump_overlay(true,  tier.length)
+            local f_cw  = make_pump_fan_anim(false, tier.length)
+            local f_ccw = make_pump_fan_anim(true,  tier.length)
+            
+            if is_ccw then
+                return {CONFIG.TEX_TOP, CONFIG.TEX_TOP, a_cw, a_ccw, f_cw, f_ccw}
+            else
+                return {CONFIG.TEX_TOP, CONFIG.TEX_TOP, a_ccw, a_cw, f_ccw, f_cw}
+            end
+        end,
+
+        on_construct = function(pos)
             local meta = core.get_meta(pos)
             meta:set_int("pump_rate", 0)
             meta:set_int("has_water_below", 0)
@@ -443,14 +453,14 @@ local function register_pump_variant(node_name, right_tile, left_tile, back_tile
                 kinetica.set_node_idle(pos, core.get_node(pos))
             end
             meta:set_string("glasses_info", format_water_pump_glasses_info(pos, core.get_node(pos)))
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
+            if kinetica.api and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(pos)
             end
-        end or nil,
+        end,
 
         after_dig_node = function(pos)
-            if kinetica.schedule_network_update then
-                kinetica.schedule_network_update(pos)
+            if kinetica.api and kinetica.api.network.schedule_update then
+                kinetica.api.network.schedule_update(pos)
             end
         end,
 
@@ -458,36 +468,8 @@ local function register_pump_variant(node_name, right_tile, left_tile, back_tile
     })
 end
 
-register_pump_variant(
-    IDLE_NAME,
-    idle_side_with_shaft,
-    idle_side_with_shaft,
-    CONFIG.TEX_FRONT_OFF,
-    CONFIG.TEX_FRONT_OFF,
-    true
-)
-
-local med_axle_cw  = make_pump_overlay(false, 0.24)
-local med_axle_ccw = make_pump_overlay(true,  0.24)
-local med_fan_cw   = make_pump_fan_anim(false, 0.24)
-local med_fan_ccw  = make_pump_fan_anim(true,  0.24)
-
-register_pump_variant(ACTIVE_CW_NAME,  med_axle_ccw, med_axle_cw,  med_fan_ccw, med_fan_cw,  false)
-register_pump_variant(ACTIVE_CCW_NAME, med_axle_cw,  med_axle_ccw, med_fan_cw,  med_fan_ccw, false)
-
-for _, tier in ipairs(CONFIG.ANIM_TIERS) do
-    local a_cw  = make_pump_overlay(false, tier.length)
-    local a_ccw = make_pump_overlay(true,  tier.length)
-    local f_cw  = make_pump_fan_anim(false, tier.length)
-    local f_ccw = make_pump_fan_anim(true,  tier.length)
-
-    register_pump_variant(IDLE_NAME .. "_" .. tier.name .. "_cw",  a_ccw, a_cw,  f_ccw, f_cw,  false)
-    register_pump_variant(IDLE_NAME .. "_" .. tier.name .. "_ccw", a_cw,  a_ccw, f_cw,  f_ccw, false)
-end
-
-core.register_on_mods_loaded(function()
-    kinetica.is_water_pump = is_water_pump_node
-end)
+core.register_alias("kinetica:water_pump_active_cw",  IDLE_NAME .. "_medium_cw")
+core.register_alias("kinetica:water_pump_active_ccw", IDLE_NAME .. "_medium_ccw")
 
 core.register_lbm({
     label             = "Wake kinetica Water Pumps on chunk load",
