@@ -2,14 +2,14 @@
 
 **Kinetica** brings mechanical power, dynamic logistics, and emergent factory automation to Mineclonia and VoxeLibre, heavily inspired by the beloved Create mod.
 
-Harness the power of water and steam to generate Rotational Power (KU), transmit it through shafts and gearboxes, and power a massive arsenal of processing machines. Say goodbye to magic blocks—in Kinetica, you build the factory.
+Harness the power of water, wind, and steam to generate Rotational Power (KU), transmit it through shafts and gearboxes, and power a massive arsenal of processing machines. Say goodbye to magic blocks—in Kinetica, you build the factory.
 
 ## The Progression Era
 
 **Tier 1: Basic Kinetics (Andesite & Wood)**
 *   **Andesite Alloy:** The foundational binder, crafted from Andesite and Iron Ingots.
-*   **Water Wheels:** Generate early-game kinetic power from flowing water.
-*   **Shafts, Gearboxes, Variable Gearboxes, Gearshifts & Chain Drives:** Transmit power around corners, vertically, and across wide factory floors. Use Variable Gearboxes to adjust speed/torque ratios or act as a clutch, and reverse rotational direction on demand with Redstone-controlled Gearshifts.
+*   **Water Wheels & Windmill Bearings:** Generate early-game kinetic power from flowing water or wind-powered sails.
+*   **Shafts, Gearboxes, Variable Gearboxes, Gearshifts, Clutches & Chain Drives:** Transmit power around corners, vertically, and across wide factory floors. Use Variable Gearboxes to adjust speed/torque ratios, Clutches to instantly sever power networks via Redstone, and reverse rotational direction on demand with Redstone-controlled Gearshifts.
 
 **Tier 2: Heavy Industry (Iron)**
 *   **Mechanical Press:** The gateway to mid-game. Stamp raw Iron, Copper, and Gold ingots into sheets, or compact 9x nuggets into ingots automatically.
@@ -49,7 +49,7 @@ This mod is designed specifically for **Mineclonia** and **VoxeLibre** and relie
 *   `kinetica_water_wheel_big.obj`: Original 3D model created by **Slikko** (CC BY-SA 4.0).
 
 **Textures:**
-*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), variable gearboxes, gearboxes, gearshifts, chain drives, encased fans, chutes, feeders, water pumps, steam turbines, belts, shafts, glue, vaults, portable interfaces, `kinetica_guide_book.png`, `kinetica_waterwheel_panel.png`, and engineer's glasses were hand-painted by **Slikko**.
+*   **Original Hand-Painted Textures (by Slikko — CC BY-SA 4.0):** All custom casings (`andisite`, `copper`, `gold`), variable gearboxes, gearboxes, gearshifts, clutches, windmill bearings, chain drives, encased fans, chutes, feeders, water pumps, steam turbines, belts, shafts, glue, vaults, portable interfaces, `kinetica_guide_book.png`, `kinetica_waterwheel_panel.png`, and engineer's glasses were hand-painted by **Slikko**.
 
 *   **Mineclonia / VoxeLibre Assets (CC BY-SA 4.0):** `kinetica_pipe.png`, and the steam generator textures are copied or modified from **Mineclonia** / **VoxeLibre** (based on **Pixel Perfection** by **XSSheep** and Mineclonia/VoxeLibre contributors).
 

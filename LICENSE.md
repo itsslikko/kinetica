@@ -34,6 +34,7 @@ SOFTWARE.
   * `kinetica_belt_side.png`, `kinetica_belt_top.png`
   * `kinetica_chain_drive_front.png`, `kinetica_chain_drive_side.png`
   * `kinetica_Chute.png`
+  * `clutch_side.png`, `create_windmill_bearing_side.png`, `create_windmill_bearing_top.png`
   * `kinetica_encased_fan_front.png`, `kinetica_encased_fan_back.png`
   * `kinetica_feeder_front.png`, `kinetica_feeder_side.png`
   * `kinetica_gear_box_gear_side.png`, `kinetica_gear_box_gear_side_on.png`, `gearshift_side.png`, `kinetica_speed_var_front_off.png`, `kinetica_speed_var_front_on.png`, `kinetica_speed_var_side.png`
