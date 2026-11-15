@@ -35,6 +35,8 @@ local CONFIG = {
         "kinetica:piston_head_sticky",
         "kinetica:piston_pole",
         "kinetica:piston_extension_pole",
+        "kinetica:mechanical_bearing",
+        "kinetica:windmill_bearing",
     },
 }
 
@@ -109,6 +111,17 @@ local function build_single_cell_tile(hex_color, fill_alpha, border_alpha)
     return "([combine:16x16:0,0=" .. fill .. ":0,0=" .. h_bar .. ":0,15=" .. h_bar .. ":0,0=" .. v_bar .. ":15,0=" .. v_bar .. ")"
 end
 
+local function build_single_cell_tile(hex_color, fill_alpha, border_alpha)
+    if file_exists(CONFIG.TEX_CUSTOM_GLUE_BOX) then
+        return CONFIG.TEX_CUSTOM_GLUE_BOX .. "^[resize:16x16"
+    end
+    local b = get_base_canvas_tex()
+    local fill = "(" .. b .. "\\^[resize\\:16x16\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(fill_alpha or 55) .. ")"
+    local h_bar = "(" .. b .. "\\^[resize\\:16x1\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(border_alpha or 210) .. ")"
+    local v_bar = "(" .. b .. "\\^[resize\\:1x16\\^[colorize\\:" .. hex_color .. "\\:255\\^[opacity\\:" .. tostring(border_alpha or 210) .. ")"
+    return "([combine:16x16:0,0=" .. fill .. ":0,0=" .. h_bar .. ":0,15=" .. h_bar .. ":0,0=" .. v_bar .. ":15,0=" .. v_bar .. ")"
+end
+
 local function build_face_texture(blocks_w, blocks_h, hex_color, is_preview)
     local w = math.max(1, math.min(CONFIG.MAX_TILE_RENDER_SPAN, math.floor(blocks_w + 0.5)))
     local h = math.max(1, math.min(CONFIG.MAX_TILE_RENDER_SPAN, math.floor(blocks_h + 0.5)))
@@ -116,7 +129,7 @@ local function build_face_texture(blocks_w, blocks_h, hex_color, is_preview)
     local b = get_base_canvas_tex()
 
     if file_exists(CONFIG.TEX_CUSTOM_GLUE_BOX) then
-        local tile = "(" .. CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16)"
+        local tile = CONFIG.TEX_CUSTOM_GLUE_BOX .. "\\^[resize\\:16x16"
         local parts = {"[combine:" .. pw .. "x" .. ph}
         for gx = 0, w - 1 do
             for gy = 0, h - 1 do
@@ -124,7 +137,9 @@ local function build_face_texture(blocks_w, blocks_h, hex_color, is_preview)
             end
         end
         local combined = table.concat(parts)
-        if is_preview and hex_color == CONFIG.PREVIEW_INVALID_COLOR then combined = combined .. "^[colorize:" .. hex_color .. ":160" end
+        if is_preview and hex_color == CONFIG.PREVIEW_INVALID_COLOR then
+            combined = combined .. "^[colorize:" .. hex_color .. ":160"
+        end
         return combined .. "^[opacity:" .. tostring(is_preview and 195 or 165)
     end
 

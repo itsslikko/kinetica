@@ -64,12 +64,18 @@ id = "kinetica:turbine",
 name = "Steam Turbine",
 desc = "Converts High-Pressure Steam into massive rotational power.\n\nHow it works:\nUse Fluid Pipes to connect the TOP port of a Steam Generator to the RIGHT port of the Turbine. \n\nWarning:\nThe Steam Turbine MUST vent exhaust out of its TOP port. If the top port is blocked by a solid block and not connected to an exhaust pipe, the machine will Choke and stop working."
 },
+{
+id = "kinetica:windmill_bearing",
+name = "Windmill Bearing",
+desc = "Generates scalable rotational power from wind.\n\nHow it works:\nGlue at least 8 Wool or Sail blocks to the front face of the bearing using Super Glue, then Right-Click the bearing to assemble it. The more sails you glue to it, the faster it spins and the more KU it generates!\n\nControls:\n• Right-Click: Assemble / Disassemble\n• Sneak + Right-Click: Reverse Spin Direction"
+},
 },
 ["Logistics & Transfer"] = {
 {id = "kinetica:shaft", name = "Shaft", desc = "The most basic component. Transfers rotational power in a straight line up to 32 blocks. Cheap and reliable."},
 {id = "kinetica:gearbox", name = "Gearbox", desc = "Transfers power at right angles along the horizontal plane (X and Z axis). Reverses rotation direction when turning corners."},
 {id = "kinetica:gearbox_vertical", name = "Vertical Gearbox", desc = "Transfers power vertically (Y axis) and horizontally. Essential for moving power between different floors of your factory."},
 {id = "kinetica:gearshift", name = "Gearshift", desc = "A redstone-controlled transmission block.\n\nWhen unpowered, power flows through it normally. When a Redstone signal is applied, it reverses the rotation direction of the entire downstream network!"},
+{id = "kinetica:clutch", name = "Clutch", desc = "A redstone-controlled transmission block.\n\nWhen unpowered, power flows through it normally (Engaged). When a Redstone signal is applied, it completely severs the kinetic network (Disengaged), stopping all downstream rotation instantly."},
 {id = "kinetica:variable_gearbox", name = "Variable Gearbox", desc = "An advanced transmission that controls speed and torque.\n\nUsage:\nRight-click to open its interface. You can increase speed (which costs more KU), increase torque (reduces speed), or set it to Neutral to act as a clutch and stop the machine."},
 {id = "kinetica:chain_drive", name = "Encased Chain Drive", desc = "Relays power linearly across parallel chain drives. Unlike gearboxes, chain drives placed next to each other will all rotate in the exact SAME direction."},
 {id = "kinetica:belt", name = "Mechanical Belt", desc = "Transfers power AND transports items.\n\nSetup:\nPlace two Shafts facing the same direction, then right-click them with the Mechanical Belt item to connect them. Items dropped on the belt will glide along it."},
@@ -179,12 +185,16 @@ if mdef then
 end
 
 if item_id == "kinetica:water_wheel_big" then
-    table.insert(lines, "• <b color=#FFFFFF>Power Generation:</b> +" .. (kinetica.BIG_WHEEL_KU or 256) .. " KU")
-    table.insert(lines, "• <b color=#FFFFFF>Base Speed:</b> " .. (kinetica.BIG_WHEEL_RPM or 4) .. " RPM")
-elseif item_id == "kinetica:turbine" then
-    table.insert(lines, "• <b color=#FFFFFF>Power Generation:</b> +" .. (kinetica.TURBINE_KU or 1024) .. " KU")
-    table.insert(lines, "• <b color=#FFFFFF>Base Speed:</b> " .. (kinetica.TURBINE_RPM or 512) .. " RPM")
-end
+        table.insert(lines, "• <b color=#FFFFFF>Power Generation:</b> +" .. (kinetica.BIG_WHEEL_KU or 256) .. " KU")
+        table.insert(lines, "• <b color=#FFFFFF>Base Speed:</b> " .. (kinetica.BIG_WHEEL_RPM or 4) .. " RPM")
+    elseif item_id == "kinetica:turbine" then
+        table.insert(lines, "• <b color=#FFFFFF>Power Generation:</b> +" .. (kinetica.TURBINE_KU or 1024) .. " KU")
+        table.insert(lines, "• <b color=#FFFFFF>Base Speed:</b> " .. (kinetica.TURBINE_RPM or 512) .. " RPM")
+    elseif item_id == "kinetica:windmill_bearing" then
+        table.insert(lines, "• <b color=#FFFFFF>Power Generation:</b> Up to +8192 KU (Max)")
+        table.insert(lines, "• <b color=#FFFFFF>Base Speed:</b> Up to 16 RPM")
+        table.insert(lines, "• <b color=#FFFFFF>Requirement:</b> Min 8 Wool/Sails")
+    end
 
 if #lines == 0 then
     table.insert(lines, "• <b color=#95A5A6>Kinetic Network: N/A (Passive/Tool)</b>")

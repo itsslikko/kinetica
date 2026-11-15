@@ -14,8 +14,82 @@ kinetica.api = {
 
 -- ============================================================================
 -- 1. MATH & ROTATION API
--- Universal 3D matrix-to-Euler math and RPM scaling for entity animations.
 -- ============================================================================
+
+-- A zero-overhead lookup table mapping the 24 facedir values directly to {x,y,z} Euler degrees for set_attach
+kinetica.api.math.FACEDIR_TO_EULER_DEG = {
+    [0]  = {x = 0,   y = 0,   z = 0},   [1]  = {x = 0,   y = -90, z = 0},   [2]  = {x = 0,   y = 180, z = 0},   [3]  = {x = 0,   y = 90,  z = 0},
+    [4]  = {x = -90, y = 0,   z = 0},   [5]  = {x = -90, y = -90, z = 0},   [6]  = {x = -90, y = 180, z = 0},   [7]  = {x = -90, y = 90,  z = 0},
+    [8]  = {x = 90,  y = 0,   z = 0},   [9]  = {x = 90,  y = 90,  z = 0},   [10] = {x = 90,  y = 180, z = 0},   [11] = {x = 90,  y = -90, z = 0},
+    [12] = {x = 0,   y = -90, z = -90}, [13] = {x = 0,   y = 180, z = -90}, [14] = {x = 0,   y = 90,  z = -90}, [15] = {x = 0,   y = 0,   z = -90},
+    [16] = {x = 0,   y = 90,  z = 90},  [17] = {x = 0,   y = 0,   z = 90},  [18] = {x = 0,   y = -90, z = 90},  [19] = {x = 0,   y = 180, z = 90},
+    [20] = {x = 180, y = 0,   z = 0},   [21] = {x = 180, y = -90, z = 0},   [22] = {x = 180, y = 180, z = 0},   [23] = {x = 180, y = 90,  z = 0},
+}
+
+function kinetica.api.math.facedir_to_euler(param2)
+    return kinetica.api.math.FACEDIR_TO_EULER_DEG[param2 or 0] or {x = 0, y = 0, z = 0}
+end
+
+-- Safely rotates a 3D vector by 90-degree steps along an axis
+function kinetica.api.math.rotate_vector_steps(vec, axis, steps)
+    steps = (steps % 4 + 4) % 4
+    if steps == 0 then return {x = vec.x, y = vec.y, z = vec.z} end
+    local x, y, z = vec.x, vec.y, vec.z
+    for _ = 1, steps do
+        if axis.z > 0 then x, y = -y, x
+        elseif axis.z < 0 then x, y = y, -x
+        elseif axis.x > 0 then y, z = -z, y
+        elseif axis.x < 0 then y, z = z, -y
+        elseif axis.y > 0 then x, z = z, -x
+        elseif axis.y < 0 then x, z = -z, x end
+    end
+    return {x = x, y = y, z = z}
+end
+
+-- Extracts physical "Front" and "Top" vectors from a facedir
+function kinetica.api.math.facedir_to_vectors(param2)
+    local dir = core.facedir_to_dir(param2 or 0) or {x = 0, y = 0, z = 1}
+    local d1 = math.floor((param2 or 0) / 4) % 6
+    local top
+    if d1 == 0 then top = {x=0, y=1, z=0}     elseif d1 == 1 then top = {x=0, y=0, z=1}
+    elseif d1 == 2 then top = {x=0, y=0, z=-1}  elseif d1 == 3 then top = {x=1, y=0, z=0}
+    elseif d1 == 4 then top = {x=-1, y=0, z=0}  elseif d1 == 5 then top = {x=0, y=-1, z=0} end
+    return dir, top
+end
+
+-- Snaps physical "Front" and "Top" vectors back to the closest valid facedir
+function kinetica.api.math.vectors_to_facedir(dir, top)
+    local d1 = 0
+    if top.y == 1 then d1 = 0 elseif top.z == 1 then d1 = 1 elseif top.z == -1 then d1 = 2
+    elseif top.x == 1 then d1 = 3 elseif top.x == -1 then d1 = 4 elseif top.y == -1 then d1 = 5 end
+
+    local d2 = 0
+    if d1 == 0 then
+        if dir.x == 1 then d2 = 1 elseif dir.z == -1 then d2 = 2 elseif dir.x == -1 then d2 = 3 end
+    elseif d1 == 1 then
+        if dir.x == 1 then d2 = 1 elseif dir.y == -1 then d2 = 2 elseif dir.x == -1 then d2 = 3 end
+    elseif d1 == 2 then
+        if dir.x == -1 then d2 = 1 elseif dir.y == -1 then d2 = 2 elseif dir.x == 1 then d2 = 3 end
+    elseif d1 == 3 then
+        if dir.z == -1 then d2 = 1 elseif dir.y == -1 then d2 = 2 elseif dir.z == 1 then d2 = 3 end
+    elseif d1 == 4 then
+        if dir.z == 1 then d2 = 1 elseif dir.y == -1 then d2 = 2 elseif dir.z == -1 then d2 = 3 end
+    elseif d1 == 5 then
+        if dir.x == 1 then d2 = 1 elseif dir.z == 1 then d2 = 2 elseif dir.x == -1 then d2 = 3 end
+    end
+    return d1 * 4 + d2
+end
+
+-- The master function to call during disassembly
+function kinetica.api.math.rotate_facedir(param2, axis, steps)
+    if not param2 or not axis or steps == 0 then return param2 end
+    local dir, top = kinetica.api.math.facedir_to_vectors(param2)
+    
+    local new_dir = kinetica.api.math.rotate_vector_steps(dir, axis, steps)
+    local new_top = kinetica.api.math.rotate_vector_steps(top, axis, steps)
+    
+    return kinetica.api.math.vectors_to_facedir(new_dir, new_top)
+end
 
 function kinetica.api.math.mat3_mul(A, B)
     return {
@@ -124,6 +198,21 @@ local function are_contraption_coupled(nodeA, nodeB, dir, posA, posB)
         end
     end
 
+    if kinetica.is_mechanical_bearing and kinetica.is_mechanical_bearing(nameA) and kinetica.get_bearing_front_dir then
+        local frontA = kinetica.get_bearing_front_dir(nodeA.param2)
+        if dir.x == frontA.x and dir.y == frontA.y and dir.z == frontA.z then
+            local mdefB = kinetica.get_machine_def and kinetica.get_machine_def(nameB)
+            if (mdefB and mdefB.can_ride_piston ~= false) or (kinetica.is_sticky_contraption_frame and kinetica.is_sticky_contraption_frame(nameB)) then return true end
+        end
+    end
+    if kinetica.is_mechanical_bearing and kinetica.is_mechanical_bearing(nameB) and kinetica.get_bearing_front_dir then
+        local frontB = kinetica.get_bearing_front_dir(nodeB.param2)
+        if dir.x == -frontB.x and dir.y == -frontB.y and dir.z == -frontB.z then
+            local mdefA = kinetica.get_machine_def and kinetica.get_machine_def(nameA)
+            if (mdefA and mdefA.can_ride_piston ~= false) or (kinetica.is_sticky_contraption_frame and kinetica.is_sticky_contraption_frame(nameA)) then return true end
+        end
+    end
+
     local stickyA = kinetica.is_sticky_contraption_frame and kinetica.is_sticky_contraption_frame(nameA)
     local stickyB = kinetica.is_sticky_contraption_frame and kinetica.is_sticky_contraption_frame(nameB)
     local mdefA   = kinetica.get_machine_def and kinetica.get_machine_def(nameA)
@@ -136,6 +225,13 @@ local function are_contraption_coupled(nodeA, nodeB, dir, posA, posB)
 end
 
 function kinetica.api.network.are_coupled(nodeA, nodeB, dir, posA, posB)
+    if kinetica.clutch_has_redstone then
+        if (kinetica.is_clutch(nodeA.name) and kinetica.clutch_has_redstone(posA)) or
+           (kinetica.is_clutch(nodeB.name) and kinetica.clutch_has_redstone(posB)) then
+            return false, nil
+        end
+    end
+    
     if kinetica.is_chain_drive and kinetica.is_chain_drive(nodeA.name) and kinetica.is_chain_drive(nodeB.name) then
         local axA = kinetica.abs_axis(nodeA.param2)
         local axB = kinetica.abs_axis(nodeB.param2)
@@ -276,6 +372,8 @@ local function read_source_state(pos, node)
         kinetica.refresh_water_wheel(pos, node)
     elseif kinetica.is_turbine and kinetica.is_turbine(node.name) and kinetica.refresh_turbine then
         kinetica.refresh_turbine(pos, node)
+    elseif kinetica.is_windmill_bearing and kinetica.is_windmill_bearing(node.name) and kinetica.refresh_windmill_bearing then
+        kinetica.refresh_windmill_bearing(pos, node)
     end
     local meta   = core.get_meta(pos)
     local active = meta:get_int("source_active") == 1
@@ -1085,6 +1183,8 @@ kinetica.glue_parent_prefixes = {
     "kinetica:piston_head_sticky",
     "kinetica:piston_pole",
     "kinetica:piston_extension_pole",
+    "kinetica:mechanical_bearing",
+    "kinetica:windmill_bearing",
 }
 
 function kinetica.register_glue_parent_source(node_prefix)

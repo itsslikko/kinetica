@@ -43,29 +43,29 @@ function kinetica.is_gearshift(name)
     return name == GEARSHIFT_IDLE or string.sub(name, 1, #GEARSHIFT_IDLE + 1) == (GEARSHIFT_IDLE .. "_")
 end
 
--- Always pass vector.new(...) into mcl_redstone.get_power so plain tables never fail
 local function has_redstone_signal(pos)
     if not pos then return false end
-    if mcl_redstone and mcl_redstone.get_power then
-        local vpos = vector.new(pos.x, pos.y, pos.z)
+    local vpos = vector.new(pos.x, pos.y, pos.z)
+
+    -- 1. Check for strong power (e.g., a lever attached directly to the block)
+    if mesecons and mesecons.is_powered then
+        if mesecons.is_powered(vpos) then return true end
+    end
+
+    if mcl_redstone then
         local ok, pwr = pcall(mcl_redstone.get_power, vpos)
-        if ok and type(pwr) == "number" and pwr > 0 then
-            return true
-        end
+        if ok and type(pwr) == "number" and pwr > 0 then return true end
         for _, d in ipairs(ADJ_DIRS) do
-            local np    = vector.new(pos.x + d.x, pos.y + d.y, pos.z + d.z)
-            local nname = raw_get_node(np).name
-            if not kinetica.is_kinetic_node or not kinetica.is_kinetic_node(nname) then
-                local ok2, pwr2 = pcall(mcl_redstone.get_power, np)
-                if ok2 and type(pwr2) == "number" and pwr2 > 0 then
-                    return true
-                end
+            local np = vector.new(pos.x + d.x, pos.y + d.y, pos.z + d.z)
+            local node = core.get_node(np)
+            -- Only react to adjacent redstone blocks that are actively emitting
+            if core.get_item_group(node.name, "redstone") > 0 then
+                 local ok2, pwr2 = pcall(mcl_redstone.get_power, np)
+                 if ok2 and type(pwr2) == "number" and pwr2 > 0 then return true end
             end
         end
     end
-    if mesecons and mesecons.is_powered and mesecons.is_powered(pos) then
-        return true
-    end
+    
     return false
 end
 
